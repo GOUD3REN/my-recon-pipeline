@@ -1,0 +1,111 @@
+name: Bug Bounty Otimizado - Multi-Alvos
+
+on:
+  schedule:
+    # Roda automaticamente uma vez por dia (à meia-noite)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Permite que você clique no botão e mude o alvo manualmente quando quiser
+
+jobs:
+  recon-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout do Repositório
+      uses: actions/checkout@v4
+
+    - name: Configurar ambiente Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+
+    - name: Instalar Ferramentas Essenciais
+      run: |
+        sudo apt-get update && sudo apt-get install -y jq libpcap-dev
+        
+        # Instala apenas o seu toolkit original
+        go install -v ://github.com
+        go install -v ://github.com
+        go install -v ://github.com
+        go install -v ://github.com
+        go install -v ://github.com
+        go install -v ://github.com
+        go install -v ://github.com
+        
+        go install ://github.com
+        go install ://github.com
+        
+        pip3 install uro github-subdomains
+
+        # Move os binários do Go para o PATH global do Linux
+        sudo cp ~/go/bin/* /usr/local/bin/
+
+    - name: Baixar Wordlists e Resolvers
+      run: |
+        mkdir -p wordlists
+        # Wordlist de 110k do SecLists
+        curl -sL "https://githubusercontent.com" -o wordlists/subdomains.txt
+        # Resolvers confiáveis atualizados
+        curl -sL "https://githubusercontent.com" -o wordlists/resolvers.txt
+
+    - name: Executar Pipeline em Lote (Multi-Alvos)
+      env:
+        GITHUB_TOKEN_RECON: ${{ secrets.GITHUB_TOKEN_RECON }}
+      run: |
+        mkdir -p resultados/
+        
+        # Verifica se o arquivo de alvos existe, se não, cria um exemplo
+        if [ ! -f targets.txt ]; then
+          echo "opera.com" > targets.txt
+        fi
+
+        # Remove caracteres indesejados como *. das linhas (caso você digite *.alvo.com)
+        sed -i 's/\*\.//g' targets.txt
+
+        echo "=== PASSO 1: ASSET DISCOVERY ==="
+        # Subfinder passivo aceita a lista de domínios diretamente
+        subfinder -dL targets.txt -all -recursive -silent -o passive.txt
+
+        # Executa ferramentas que exigem um domínio por vez
+        while read -r target; do
+          if [ -n "$target" ]; then
+            echo "Processando subdomínios adicionais para: $target"
+            github-subdomains -d "$target" -t "$GITHUB_TOKEN_RECON" >> passive.txt || true
+            
+            # Brute Force específico para o escopo atual
+            shuffledns -d "$target" -w wordlists/subdomains.txt -r wordlists/resolvers.txt -mode bruteforce -o "brute_$target.txt" || true
+            cat "brute_$target.txt" >> brute_all.txt 2>/dev/null || true
+          fi
+        done < targets.txt
+
+        # Unifica e limpa os resultados passivos e ativos
+        touch brute_all.txt
+        cat passive.txt brute_all.txt | sort -u | alterx | dnsx | tee alterx.txt
+
+        # Escaneamento de portas e validação HTTP
+        cat alterx.txt | naabu -top-ports 1000 -ep 22,23,3389 -silent | tee open-ports.txt
+        cat open-ports.txt | httpx -title -sc -cl -td -server -location -fr -fc 404 -silent | tee live.txt
+
+        echo "=== PASSO 2: CONTENT DISCOVERY ==="
+        # Katana otimizado para a memória do GitHub (concorrência ajustada para 15)
+        katana -list live.txt -xhr -jsl -aff -kf robotstxt,sitemapxml -depth 3 -silent -c 15 | tee katana_ep.txt
+        
+        cat live.txt | awk '{print $1}' | waybackurls | tee wayback.txt
+        cat live.txt | awk '{print $1}' | gau --threads 4 | tee gau.txt
+        
+        # Filtro inteligente com URO
+        cat katana_ep.txt wayback.txt gau.txt | sort -u | uro | tee all_ep.txt
+
+        echo "=== PASSO 3: JS ANALYSIS ==="
+        cat all_ep.txt | grep -E "\.js($|\?)" | sort -u | tee resultados/js_files.txt
+        
+        # Salva o arquivo final de hosts vivos na pasta de resultados
+        mv live.txt resultados/live_hosts.txt
+
+    - name: Commitar e Atualizar Repositório
+      run: |
+        git config --local user.email "actions@github.com"
+        git config --local user.name "Recon Bot"
+        git add resultados/*
+        git commit -m "Recon automático em lote: $(date +'%Y-%m-%d %H:%M')" || echo "Nenhuma mudança detectada nos alvos."
+        git push
