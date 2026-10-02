@@ -4,7 +4,12 @@ on:
   schedule:
     # Roda automaticamente uma vez por dia (à meia-noite)
     - cron: '0 0 * * *'
-  workflow_dispatch: # Permite que você clique no botão e mude o alvo manualmente quando quiser
+  workflow_dispatch:
+    inputs:
+      alvo_manual:
+        description: 'Quer rodar um alvo específico agora? Digite aqui (ex: opera.com). Se deixar em branco, usará o targets.txt'
+        required: false
+        default: ''
 
 jobs:
   recon-pipeline:
@@ -50,16 +55,21 @@ jobs:
 
     - name: Executar Pipeline em Lote (Multi-Alvos)
       env:
-        GITHUB_TOKEN_RECON: ${{ secrets.GITHUB_TOKEN_RECON }}
+        GITHUB_TOKEN_RECON: ${{ secrets.RECON_PAT_TOKEN }}
       run: |
         mkdir -p resultados/
         
-        # Verifica se o arquivo de alvos existe, se não, cria um exemplo
+        # Verifica se foi digitado um alvo manual na caixinha do Actions
+        if [ -n "${{ github.event.inputs.alvo_manual }}" ]; then
+          echo "${{ github.event.inputs.alvo_manual }}" > targets.txt
+        fi
+
+        # Garante que o arquivo de alvos existe, se não, cria um exemplo padrão
         if [ ! -f targets.txt ]; then
           echo "opera.com" > targets.txt
         fi
 
-        # Remove caracteres indesejados como *. das linhas (caso você digite *.alvo.com)
+        # Remove caracteres indesejados como *. das linhas (caso digite *.alvo.com)
         sed -i 's/\*\.//g' targets.txt
 
         echo "=== PASSO 1: ASSET DISCOVERY ==="
