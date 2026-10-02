@@ -1,1 +1,1 @@
-observability.embark.net
+embark.net
