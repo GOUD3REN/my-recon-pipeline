@@ -55,10 +55,11 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
-            # Correcao: desabilita auth do checkout para clonar repo externo
-            git -c http.extraheader= clone --depth 1 https://github.com/robertdavidgraham/massdns /tmp/massdns
-            make -C /tmp/massdns -j"$(nproc)" >/dev/null
-            sudo cp /tmp/massdns/bin/massdns /usr/local/bin/massdns
+            echo "Baixando massdns via curl (tarball)..."
+            curl -sL "https://github.com/robertdavidgraham/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
+            tar -xzf /tmp/massdns.tar.gz -C /tmp
+            make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
+            sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
           fi
           massdns --version || echo "massdns instalado"
 
