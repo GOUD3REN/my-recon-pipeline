@@ -2,7 +2,6 @@ name: Bug Bounty Otimizado - Multi-Alvos
 
 on:
   schedule:
-    # Roda automaticamente uma vez por dia (à meia-noite)
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
@@ -23,36 +22,37 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: 'stable'
+        cache: false # Desativa o cache automático que estava quebrando a VM
 
     - name: Instalar Ferramentas Essenciais
       run: |
         sudo apt-get update && sudo apt-get install -y jq libpcap-dev
         
-        # Instala apenas o seu toolkit original
-        go install -v ://github.com || true
-        go install -v ://github.com || true
-        go install -v ://github.com || true
-        go install -v ://github.com || true
-        go install -v ://github.com || true
-        go install -v ://github.com || true
-        go install -v ://github.com || true
+        # Garante a criação da pasta de binários
+        mkdir -p /home/runner/go/bin
         
-        go install ://github.com || true
-        go install ://github.com || true
+        # Instalação forçada e explícita no PATH do Runner
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
+        GO111MODULE=on go install -v ://github.com
         
-        pip3 install uro github-subdomains || true
+        go install ://github.com
+        go install ://github.com
+        
+        pip3 install uro github-subdomains
 
-        # Move os binários do Go para o PATH global do Linux
-        mkdir -p ~/go/bin
-        sudo cp ~/go/bin/* /usr/local/bin/ 2>/dev/null || true
+        # Vincula os binários diretamente no ambiente do GitHub
+        echo "/home/runner/go/bin" >> $GITHUB_PATH
 
     - name: Baixar Wordlists e Resolvers
       run: |
         mkdir -p wordlists
-        # Wordlist de 110k do SecLists
-        curl -sL "https://githubusercontent.com" -o wordlists/subdomains.txt || true
-        # Resolvers confiáveis atualizados
-        curl -sL "https://githubusercontent.com" -o wordlists/resolvers.txt || true
+        curl -sL "https://githubusercontent.com" -o wordlists/subdomains.txt
+        curl -sL "https://githubusercontent.com" -o wordlists/resolvers.txt
 
     - name: Executar Pipeline em Lote (Multi-Alvos)
       env:
@@ -66,25 +66,16 @@ jobs:
           echo "${{ github.event.inputs.alvo_manual }}" > targets.txt
         fi
 
-        # Garante que o arquivo de alvos existe e não está vazio
-        if [ ! -s targets.txt ]; then
-          echo "opera.com" > targets.txt
-        fi
-
-        # Remove caracteres indesejados como *. das linhas (caso digite *.alvo.com)
+        # Remove caracteres indesejados como *. das linhas
         sed -i 's/\*\.//g' targets.txt
 
         echo "=== PASSO 1: ASSET DISCOVERY ==="
-        # Subfinder passivo aceita a lista de domínios diretamente
-        subfinder -dL targets.txt -all -recursive -silent -o passive.txt || true
+        subfinder -dL targets.txt -all -recursive -silent -o passive.txt
 
-        # Executa ferramentas que exigem um domínio por vez
         while read -r target || [ -n "$target" ]; do
           if [ -n "$target" ]; then
-            echo "Processando subdomínios adicionais para: $target"
+            echo "Rodando ferramentas ativas para: $target"
             github-subdomains -d "$target" -t "$GITHUB_TOKEN_RECON" >> passive.txt || true
-            
-            # Brute Force específico para o escopo atual
             shuffledns -d "$target" -w wordlists/subdomains.txt -r wordlists/resolvers.txt -mode bruteforce -o "brute_$target.txt" || true
             if [ -f "brute_$target.txt" ]; then
               cat "brute_$target.txt" >> brute_all.txt 2>/dev/null || true
@@ -92,37 +83,28 @@ jobs:
           fi
         done < targets.txt
 
-        # Unifica e limpa os resultados passivos e ativos
-        cat passive.txt brute_all.txt | sort -u | alterx | dnsx | tee alterx.txt || true
-
-        # Escaneamento de portas e validação HTTP
-        cat alterx.txt | naabu -top-ports 1000 -ep 22,23,3389 -silent | tee open-ports.txt || true
-        cat open-ports.txt | httpx -title -sc -cl -td -server -location -fr -fc 404 -silent | tee live.txt || true
+        cat passive.txt brute_all.txt | sort -u | alterx | dnsx | tee alterx.txt
+        cat alterx.txt | naabu -top-ports 1000 -ep 22,23,3389 -silent | tee open-ports.txt
+        httpx -l open-ports.txt -title -sc -cl -td -server -location -fr -fc 404 -silent | tee live.txt
 
         echo "=== PASSO 2: CONTENT DISCOVERY ==="
         if [ -s live.txt ]; then
-          # Katana otimizado para a memória do GitHub (concorrência ajustada para 15)
-          katana -list live.txt -xhr -jsl -aff -kf robotstxt,sitemapxml -depth 3 -silent -c 15 | tee katana_ep.txt || true
-          
-          cat live.txt | awk '{print $1}' | waybackurls | tee wayback.txt || true
-          cat live.txt | awk '{print $1}' | gau --threads 4 | tee gau.txt || true
-          
-          # Filtro inteligente com URO
-          cat katana_ep.txt wayback.txt gau.txt | sort -u | uro | tee all_ep.txt || true
+          katana -list live.txt -xhr -jsl -aff -kf robotstxt,sitemapxml -depth 3 -silent -c 10 | tee katana_ep.txt
+          cat live.txt | awk '{print $1}' | waybackurls | tee wayback.txt
+          cat live.txt | awk '{print $1}' | gau --threads 4 | tee gau.txt
+          cat katana_ep.txt wayback.txt gau.txt | sort -u | uro | tee all_ep.txt
         else
-          echo "Nenhum host ativo encontrado para varredura de conteúdo."
+          echo "Nenhum host vivo encontrado para content discovery."
         fi
 
         echo "=== PASSO 3: JS ANALYSIS ==="
         cat all_ep.txt | grep -E "\.js($|\?)" | sort -u > resultados/js_files.txt || true
-        
-        # Salva o arquivo final de hosts vivos na pasta de resultados
         cp live.txt resultados/live_hosts.txt || true
 
-    - name: Commitar e Atualizar Repositório
+    - name: Commitar e Permanecer Resultados
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "Recon Bot"
         git add resultados/*
-        git commit -m "Recon automático em lote: $(date +'%Y-%m-%d %H:%M')" || echo "Nenhuma mudança detectada nos alvos."
-        git push || true
+        git commit -m "Recon completo: $(date +'%Y-%m-%d %H:%M')" || echo "Sem alterações nos resultados."
+        git push
