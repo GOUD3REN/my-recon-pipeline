@@ -55,8 +55,9 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
-            echo "Baixando massdns via curl (tarball)..."
-            curl -sL "https://github.com/robertdavidgraham/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
+            echo "Baixando massdns do repositorio correto (blechschmidt)..."
+            # -L segue redirects, -f falha se status nao for 2xx, -s silencia progresso
+            curl -Lfs "https://github.com/blechschmidt/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
             tar -xzf /tmp/massdns.tar.gz -C /tmp
             make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
             sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
