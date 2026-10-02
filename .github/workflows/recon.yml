@@ -29,43 +29,45 @@ jobs:
         sudo apt-get update && sudo apt-get install -y jq libpcap-dev
         
         # Instala apenas o seu toolkit original
-        go install -v ://github.com
-        go install -v ://github.com
-        go install -v ://github.com
-        go install -v ://github.com
-        go install -v ://github.com
-        go install -v ://github.com
-        go install -v ://github.com
+        go install -v ://github.com || true
+        go install -v ://github.com || true
+        go install -v ://github.com || true
+        go install -v ://github.com || true
+        go install -v ://github.com || true
+        go install -v ://github.com || true
+        go install -v ://github.com || true
         
-        go install ://github.com
-        go install ://github.com
+        go install ://github.com || true
+        go install ://github.com || true
         
-        pip3 install uro github-subdomains
+        pip3 install uro github-subdomains || true
 
         # Move os binários do Go para o PATH global do Linux
-        sudo cp ~/go/bin/* /usr/local/bin/
+        mkdir -p ~/go/bin
+        sudo cp ~/go/bin/* /usr/local/bin/ 2>/dev/null || true
 
     - name: Baixar Wordlists e Resolvers
       run: |
         mkdir -p wordlists
         # Wordlist de 110k do SecLists
-        curl -sL "https://githubusercontent.com" -o wordlists/subdomains.txt
+        curl -sL "https://githubusercontent.com" -o wordlists/subdomains.txt || true
         # Resolvers confiáveis atualizados
-        curl -sL "https://githubusercontent.com" -o wordlists/resolvers.txt
+        curl -sL "https://githubusercontent.com" -o wordlists/resolvers.txt || true
 
     - name: Executar Pipeline em Lote (Multi-Alvos)
       env:
         GITHUB_TOKEN_RECON: ${{ secrets.RECON_PAT_TOKEN }}
       run: |
         mkdir -p resultados/
+        touch passive.txt brute_all.txt alterx.txt open-ports.txt live.txt katana_ep.txt wayback.txt gau.txt all_ep.txt
         
         # Verifica se foi digitado um alvo manual na caixinha do Actions
         if [ -n "${{ github.event.inputs.alvo_manual }}" ]; then
           echo "${{ github.event.inputs.alvo_manual }}" > targets.txt
         fi
 
-        # Garante que o arquivo de alvos existe, se não, cria um exemplo padrão
-        if [ ! -f targets.txt ]; then
+        # Garante que o arquivo de alvos existe e não está vazio
+        if [ ! -s targets.txt ]; then
           echo "opera.com" > targets.txt
         fi
 
@@ -74,43 +76,48 @@ jobs:
 
         echo "=== PASSO 1: ASSET DISCOVERY ==="
         # Subfinder passivo aceita a lista de domínios diretamente
-        subfinder -dL targets.txt -all -recursive -silent -o passive.txt
+        subfinder -dL targets.txt -all -recursive -silent -o passive.txt || true
 
         # Executa ferramentas que exigem um domínio por vez
-        while read -r target; do
+        while read -r target || [ -n "$target" ]; do
           if [ -n "$target" ]; then
             echo "Processando subdomínios adicionais para: $target"
             github-subdomains -d "$target" -t "$GITHUB_TOKEN_RECON" >> passive.txt || true
             
             # Brute Force específico para o escopo atual
             shuffledns -d "$target" -w wordlists/subdomains.txt -r wordlists/resolvers.txt -mode bruteforce -o "brute_$target.txt" || true
-            cat "brute_$target.txt" >> brute_all.txt 2>/dev/null || true
+            if [ -f "brute_$target.txt" ]; then
+              cat "brute_$target.txt" >> brute_all.txt 2>/dev/null || true
+            fi
           fi
         done < targets.txt
 
         # Unifica e limpa os resultados passivos e ativos
-        touch brute_all.txt
-        cat passive.txt brute_all.txt | sort -u | alterx | dnsx | tee alterx.txt
+        cat passive.txt brute_all.txt | sort -u | alterx | dnsx | tee alterx.txt || true
 
         # Escaneamento de portas e validação HTTP
-        cat alterx.txt | naabu -top-ports 1000 -ep 22,23,3389 -silent | tee open-ports.txt
-        cat open-ports.txt | httpx -title -sc -cl -td -server -location -fr -fc 404 -silent | tee live.txt
+        cat alterx.txt | naabu -top-ports 1000 -ep 22,23,3389 -silent | tee open-ports.txt || true
+        cat open-ports.txt | httpx -title -sc -cl -td -server -location -fr -fc 404 -silent | tee live.txt || true
 
         echo "=== PASSO 2: CONTENT DISCOVERY ==="
-        # Katana otimizado para a memória do GitHub (concorrência ajustada para 15)
-        katana -list live.txt -xhr -jsl -aff -kf robotstxt,sitemapxml -depth 3 -silent -c 15 | tee katana_ep.txt
-        
-        cat live.txt | awk '{print $1}' | waybackurls | tee wayback.txt
-        cat live.txt | awk '{print $1}' | gau --threads 4 | tee gau.txt
-        
-        # Filtro inteligente com URO
-        cat katana_ep.txt wayback.txt gau.txt | sort -u | uro | tee all_ep.txt
+        if [ -s live.txt ]; then
+          # Katana otimizado para a memória do GitHub (concorrência ajustada para 15)
+          katana -list live.txt -xhr -jsl -aff -kf robotstxt,sitemapxml -depth 3 -silent -c 15 | tee katana_ep.txt || true
+          
+          cat live.txt | awk '{print $1}' | waybackurls | tee wayback.txt || true
+          cat live.txt | awk '{print $1}' | gau --threads 4 | tee gau.txt || true
+          
+          # Filtro inteligente com URO
+          cat katana_ep.txt wayback.txt gau.txt | sort -u | uro | tee all_ep.txt || true
+        else
+          echo "Nenhum host ativo encontrado para varredura de conteúdo."
+        fi
 
         echo "=== PASSO 3: JS ANALYSIS ==="
-        cat all_ep.txt | grep -E "\.js($|\?)" | sort -u | tee resultados/js_files.txt
+        cat all_ep.txt | grep -E "\.js($|\?)" | sort -u > resultados/js_files.txt || true
         
         # Salva o arquivo final de hosts vivos na pasta de resultados
-        mv live.txt resultados/live_hosts.txt
+        cp live.txt resultados/live_hosts.txt || true
 
     - name: Commitar e Atualizar Repositório
       run: |
@@ -118,4 +125,4 @@ jobs:
         git config --local user.name "Recon Bot"
         git add resultados/*
         git commit -m "Recon automático em lote: $(date +'%Y-%m-%d %H:%M')" || echo "Nenhuma mudança detectada nos alvos."
-        git push
+        git push || true
