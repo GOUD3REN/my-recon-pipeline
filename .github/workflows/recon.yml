@@ -56,7 +56,6 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
             echo "Baixando massdns do repositorio correto (blechschmidt)..."
-            # -L segue redirects, -f falha se status nao for 2xx, -s silencia progresso
             curl -Lfs "https://github.com/blechschmidt/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
             tar -xzf /tmp/massdns.tar.gz -C /tmp
             make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
@@ -75,8 +74,8 @@ jobs:
           [ -x "$GOBIN_DIR/alterx" ]      || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
           [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
           [ -x "$GOBIN_DIR/gau" ]         || go install -v github.com/lc/gau/v2/cmd/gau@latest
+          [ -x "$GOBIN_DIR/github-subdomains" ] || go install -v github.com/gwen001/github-subdomains@latest
           command -v uro >/dev/null               || pip3 install --quiet uro
-          command -v github-subdomains >/dev/null || pip3 install --quiet github-subdomains
           echo "=== Ferramentas instaladas ==="
           ls -la "$GOBIN_DIR"
 
