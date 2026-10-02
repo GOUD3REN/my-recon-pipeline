@@ -22,37 +22,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  recon-pipeline:
+  # ═══════════════ JOB 1: DISCOVERY (passivo + brute) ═══════════════
+  discovery:
     runs-on: ubuntu-latest
     timeout-minutes: 350
-
     env:
       GOBIN_DIR: /home/runner/go/bin
-      TARGET_MANUAL:   ${{ github.event.inputs.alvo_manual }}
-      MODO_COMPLETO:   ${{ github.event.inputs.modo_completo }}
+      TARGET_MANUAL: ${{ github.event.inputs.alvo_manual }}
+      MODO_COMPLETO: ${{ github.event.inputs.modo_completo }}
       GITHUB_TOKEN_RECON: ${{ secrets.RECON_PAT_TOKEN }}
-      RECON_COOKIE:    ${{ secrets.RECON_COOKIE }}
       SUBFINDER_CONFIG: ${{ secrets.SUBFINDER_CONFIG }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
           cache: false
-
-      - name: Cache de binarios Go
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             /home/runner/go/bin
             /home/runner/.cache/go-build
           key: gobin-v1-${{ runner.os }}
-
-      - name: Dependencias OS + massdns
+      - name: Deps + massdns
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
@@ -61,187 +53,278 @@ jobs:
             make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
             sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
           fi
-          massdns --version || echo "massdns instalado"
-
-      - name: Configurar API keys do subfinder
+      - name: API keys subfinder
         run: |
           mkdir -p ~/.config/subfinder
-          if [ -n "$SUBFINDER_CONFIG" ]; then
-            printf '%s\n' "$SUBFINDER_CONFIG" > ~/.config/subfinder/provider-config.yaml
-            echo "provider-config.yaml criado com suas API keys"
-          else
-            echo "AVISO: SUBFINDER_CONFIG vazio - usando apenas fontes gratuitas"
-          fi
-
+          [ -n "$SUBFINDER_CONFIG" ] && printf '%s\n' "$SUBFINDER_CONFIG" > ~/.config/subfinder/provider-config.yaml
       - name: Instalar ferramentas
         run: |
           [ -x "$GOBIN_DIR/subfinder" ]   || go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           [ -x "$GOBIN_DIR/shuffledns" ]  || go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
-          [ -x "$GOBIN_DIR/dnsx" ]        || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-          [ -x "$GOBIN_DIR/naabu" ]       || go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-          [ -x "$GOBIN_DIR/httpx" ]       || go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-          [ -x "$GOBIN_DIR/katana" ]      || go install -v github.com/projectdiscovery/katana/cmd/katana@latest
-          [ -x "$GOBIN_DIR/alterx" ]      || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
-          [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
-          [ -x "$GOBIN_DIR/gau" ]         || go install -v github.com/lc/gau/v2/cmd/gau@latest
           [ -x "$GOBIN_DIR/github-subdomains" ] || go install -v github.com/gwen001/github-subdomains@latest
-          command -v uro >/dev/null || pip3 install --quiet uro
-          ls -la "$GOBIN_DIR"
-
-      - name: Cache de wordlists
+      - name: Cache wordlists
         uses: actions/cache@v4
         with:
           path: wordlists
           key: wordlists-v1
-
-      - name: Baixar wordlists e resolvers
+      - name: Baixar wordlists
         run: |
           mkdir -p wordlists
           [ -s wordlists/subdomains.txt ] || curl -sL --retry 3 -o wordlists/subdomains.txt \
             "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt"
           [ -s wordlists/resolvers.txt ] || curl -sL --retry 3 -o wordlists/resolvers.txt \
             "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
-          wc -l wordlists/*.txt
-
-      - name: Executar Pipeline
+      - name: Discovery
         run: |
-          # Funcao de limpeza: remove ANSI colors, timestamps [HH:MM:SS],
-          # caixa alta, linhas vazias e qualquer coisa que nao pareca dominio
           clean() {
             sed -r 's/\x1b\[[0-9;]*[mK]//g' \
               | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
-              | tr 'A-Z' 'a-z' \
-              | sed '/^[[:space:]]*$/d' \
+              | tr 'A-Z' 'a-z' | sed '/^[[:space:]]*$/d' \
               | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
           }
-
-          mkdir -p resultados/js work /tmp/prev
-          for f in subdomains.txt all_endpoints.txt js_files.txt; do
-            [ -f "resultados/$f" ] && cp "resultados/$f" "/tmp/prev/$f" || true
-          done
-
+          mkdir -p work
           if [ -n "$TARGET_MANUAL" ]; then echo "$TARGET_MANUAL" > targets.txt; fi
           sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-z]*://||; s/\*\.//g' targets.txt
-          grep -vE '^(#|$)' targets.txt > work/targets.clean || true
-          mv work/targets.clean targets.txt
+          grep -vE '^(#|$)' targets.txt > work/t.tmp || true
+          mv work/t.tmp targets.txt
           echo "== ALVOS =="; cat targets.txt
-
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
-          echo "MODO DEEP: $DEEP"
+          echo "DEEP=$DEEP" | tee work/deep.flag
 
-          echo "== PASSO 1: ASSET DISCOVERY (passivo com API keys) =="
           subfinder -dL targets.txt -all -silent -t 50 -o work/passive_raw.txt || true
           clean < work/passive_raw.txt > work/passive.txt
           while read -r t; do
             [ -z "$t" ] && continue
             github-subdomains -d "$t" -t "$GITHUB_TOKEN_RECON" 2>/dev/null | clean >> work/passive.txt || true
           done < targets.txt
-          echo "Passivo: $(wc -l < work/passive.txt) subdominios"
+          echo "Passivo: $(wc -l < work/passive.txt)"
 
           if [ "$DEEP" = "1" ]; then
-            echo "== PASSO 1b: BRUTE FORCE (shuffledns) =="
             while read -r t; do
               [ -z "$t" ] && continue
-              timeout 1200 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
+              timeout 5400 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
                          -mode bruteforce -m /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
               [ -f "work/brute_${t}_raw.txt" ] && clean < "work/brute_${t}_raw.txt" >> work/brute_all.txt || true
             done < targets.txt
           fi
-
           cat work/passive.txt work/brute_all.txt 2>/dev/null | sort -u > work/subs_raw.txt
-          echo "Subdominios brutos: $(wc -l < work/subs_raw.txt)"
-          timeout 900 dnsx -l work/subs_raw.txt -r wordlists/resolvers.txt -retry 2 -silent -o work/subs_live_raw.txt || true
+          echo "SUBS RAW: $(wc -l < work/subs_raw.txt)"
+      - name: Upload subs_raw
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: subs-raw
+          path: |
+            work/subs_raw.txt
+            work/deep.flag
+          retention-days: 3
+
+  # ═══════════════ JOB 2: RESOLUÇÃO + PERMUTACOES ═══════════════
+  resolve:
+    needs: discovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GOBIN_DIR: /home/runner/go/bin
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /home/runner/go/bin
+            /home/runner/.cache/go-build
+          key: gobin-v1-${{ runner.os }}
+      - name: Instalar ferramentas
+        run: |
+          [ -x "$GOBIN_DIR/dnsx" ]   || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+          [ -x "$GOBIN_DIR/alterx" ] || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
+      - name: Download subs_raw
+        uses: actions/download-artifact@v4
+        with:
+          name: subs-raw
+          path: work/
+      - name: Resolver + permutacoes
+        run: |
+          clean() {
+            sed -r 's/\x1b\[[0-9;]*[mK]//g' \
+              | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
+              | tr 'A-Z' 'a-z' | sed '/^[[:space:]]*$/d' \
+              | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
+          }
+          # Resolvers CONFIÁVEIS (o bug das 5029 falhas era a lista de 10k resolvers mortos)
+          printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > work/resolvers_trusted.txt
+          # Sanity check: se isso nao resolver, UDP esta bloqueado no runner
+          echo "== SANITY CHECK DNS =="
+          printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers_trusted.txt -silent -retry 3 || true
+          DEEP=$(grep -o '1' work/deep.flag || echo 0)
+
+          echo "== RESOLUCAO =="
+          dnsx -l work/subs_raw.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/subs_live_raw.txt || true
           clean < work/subs_live_raw.txt > work/subs_live.txt
+          echo "Resolvidos: $(wc -l < work/subs_live.txt) de $(wc -l < work/subs_raw.txt)"
 
           if [ "$DEEP" = "1" ]; then
-            echo "== PASSO 1c: PERMUTACOES (alterx COM LIMITE) =="
-            # Cap de entrada: alterx em milhares de subs explode combinatoriamente
-            head -n 3000 work/subs_live.txt > work/alterx_in.txt
-            timeout 600 alterx -l work/alterx_in.txt -silent -o work/perms_all.txt || true
-            # Cap de saida: no maximo 200k permutacoes p/ resolver (evita as 5h do WSL)
-            head -n 200000 work/perms_all.txt | clean > work/perms.txt
-            echo "Permutacoes a resolver: $(wc -l < work/perms.txt)"
-            timeout 1200 dnsx -l work/perms.txt -r wordlists/resolvers.txt -retry 1 -silent -o work/perms_live_raw.txt || true
+            echo "== PERMUTACOES (alterx sem cap, dnsx streamando ate 300min) =="
+            alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
+            echo "Permutacoes geradas: $(wc -l < work/perms_all.txt)"
+            # dnsx escreve no -o incrementalmente: se o timeout matar, o parcial fica salvo
+            timeout 18000 dnsx -l work/perms_all.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/perms_live_raw.txt || true
             clean < work/perms_live_raw.txt > work/perms_live.txt
+            echo "Permutacoes vivas: $(wc -l < work/perms_live.txt)"
           fi
+          cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > subdomains.txt
+          echo "SUBDOMINIOS FINAIS: $(wc -l < subdomains.txt)"
+      - name: Upload subs_live
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: subs-live
+          path: subdomains.txt
+          retention-days: 3
 
-          cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > resultados/subdomains.txt
-          echo "Subdominios RESOLVIDOS: $(wc -l < resultados/subdomains.txt)"
+  # ═══════════════ JOB 3: PORTAS + HTTP + CONTENT ═══════════════
+  surface:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GOBIN_DIR: /home/runner/go/bin
+      MODO_COMPLETO: ${{ github.event.inputs.modo_completo }}
+      RECON_COOKIE: ${{ secrets.RECON_COOKIE }}
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /home/runner/go/bin
+            /home/runner/.cache/go-build
+          key: gobin-v1-${{ runner.os }}
+      - name: Instalar ferramentas
+        run: |
+          [ -x "$GOBIN_DIR/naabu" ]       || go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+          [ -x "$GOBIN_DIR/httpx" ]       || go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+          [ -x "$GOBIN_DIR/katana" ]      || go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+          [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
+          [ -x "$GOBIN_DIR/gau" ]         || go install -v github.com/lc/gau/v2/cmd/gau@latest
+          command -v uro >/dev/null || pip3 install --quiet uro
+      - name: Download subs_live
+        uses: actions/download-artifact@v4
+        with:
+          name: subs-live
+          path: work/
+      - name: Portas + HTTP + Content
+        run: |
+          mkdir -p out
+          cp work/subdomains.txt out/subdomains.txt
+          DEEP=0
+          if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
 
-          echo "== PASSO 2: PORTAS + PROBING HTTP =="
           if [ "$DEEP" = "1" ]; then
-            timeout 1500 naabu -l resultados/subdomains.txt -top-ports 1000 -ep 22,23,3389 \
-                  -c 50 -rate 1500 -silent -o work/open-ports.txt || true
-            cat work/open-ports.txt resultados/subdomains.txt | sort -u > work/httpx_input.txt
+            timeout 12000 naabu -l out/subdomains.txt -top-ports 1000 -ep 22,23,3389 \
+                  -c 50 -rate 1500 -silent -o out/open-ports.txt || true
+            cat out/open-ports.txt out/subdomains.txt | sort -u > work/httpx_in.txt
           else
-            cp resultados/subdomains.txt work/httpx_input.txt
+            cp out/subdomains.txt work/httpx_in.txt
           fi
-          httpx -l work/httpx_input.txt -ports 80,443,8000,8080,8443,8888 \
+          httpx -l work/httpx_in.txt -ports 80,443,8000,8080,8443,8888 \
                 -title -sc -cl -td -server -location -fr -fc 404 \
-                -threads 50 -timeout 10 -retries 1 -silent -o work/live.txt || true
-          awk '{print $1}' work/live.txt | sort -u > resultados/live_urls.txt
-          cp work/live.txt resultados/live_hosts.txt
-          echo "Hosts vivos: $(wc -l < resultados/live_urls.txt)"
+                -threads 50 -timeout 10 -retries 1 -silent -o out/live_hosts.txt || true
+          awk '{print $1}' out/live_hosts.txt | sort -u > out/live_urls.txt
+          echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
-          echo "== PASSO 3: CONTENT DISCOVERY =="
-          if [ -s resultados/live_urls.txt ]; then
+          if [ -s out/live_urls.txt ]; then
             if [ "$DEEP" = "1" ]; then
               COOKIE_ARG=""
               [ -n "$RECON_COOKIE" ] && COOKIE_ARG="-H Cookie:$RECON_COOKIE"
-              head -n 200 resultados/live_urls.txt > work/crawl_in.txt
-              timeout 1500 katana -list work/crawl_in.txt -depth 3 -c 10 -aff -jsl -xhr \
-                     -kf robotstxt,sitemapxml -timeout 10 -silent $COOKIE_ARG -o work/katana.txt || true
+              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                     -kf robotstxt,sitemapxml -timeout 10 -silent $COOKIE_ARG -o out/katana.txt || true
             fi
-            timeout 900 waybackurls -threads 10 < resultados/subdomains.txt > work/wayback.txt 2>/dev/null || true
-            timeout 900 gau --threads 4 < resultados/subdomains.txt > work/gau.txt 2>/dev/null || true
-            cat work/katana.txt work/wayback.txt work/gau.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
-            uro -l work/merged.txt -o resultados/all_endpoints.txt || cp work/merged.txt resultados/all_endpoints.txt
+            timeout 5400 waybackurls -threads 10 < out/subdomains.txt > out/wayback.txt 2>/dev/null || true
+            timeout 5400 gau --threads 4 < out/subdomains.txt > out/gau.txt 2>/dev/null || true
+            cat out/katana.txt out/wayback.txt out/gau.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
+            uro -l work/merged.txt -o out/all_endpoints.txt || cp work/merged.txt out/all_endpoints.txt
           else
-            echo "Nenhum host vivo."
-            touch resultados/all_endpoints.txt
+            touch out/all_endpoints.txt
           fi
+          echo "Endpoints: $(wc -l < out/all_endpoints.txt)"
+      - name: Upload surface
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surface
+          path: out/
+          retention-days: 3
 
-          echo "== PASSO 4: JS ANALYSIS =="
+  # ═══════════════ JOB 4: JS + DIFF + PUSH ═══════════════
+  finalize:
+    needs: surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GOBIN_DIR: /home/runner/go/bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: /home/runner/go/bin
+          key: gobin-v1-${{ runner.os }}
+      - name: Instalar httpx
+        run: |
+          [ -x "$GOBIN_DIR/httpx" ] || go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+      - name: Download surface
+        uses: actions/download-artifact@v4
+        with:
+          name: surface
+          path: resultados/
+      - name: JS + diff + push
+        run: |
+          mkdir -p resultados/js
           grep -E '\.js($|\?)' resultados/all_endpoints.txt 2>/dev/null | sort -u > resultados/js_files.txt || touch resultados/js_files.txt
           if [ -s resultados/js_files.txt ]; then
             head -n 500 resultados/js_files.txt | httpx -threads 20 -timeout 10 -silent -download-dir resultados/js || true
+            grep -rEioh "(api[_-]?key|secret|token|aws_access_key_id|private_key|bearer)[\"':= ]+[A-Za-z0-9_\-/+]{8,}" \
+              resultados/js 2>/dev/null | sort -u | head -n 200 > resultados/js_secret_hits.txt || true
           fi
-
-          echo "== PASSO 5: DIFF DE ASSETS NOVOS =="
-          if [ -s /tmp/prev/subdomains.txt ]; then
-            comm -13 <(sort -u /tmp/prev/subdomains.txt) <(sort -u resultados/subdomains.txt) > resultados/NOVOS_subdomains.txt
-            comm -13 <(sort -u /tmp/prev/all_endpoints.txt) <(sort -u resultados/all_endpoints.txt) > resultados/NOVOS_endpoints.txt
-          else
-            cp resultados/subdomains.txt resultados/NOVOS_subdomains.txt
-            cp resultados/all_endpoints.txt resultados/NOVOS_endpoints.txt
-          fi
-
+          # Diff contra o ultimo run commitado
+          mkdir -p /tmp/prev
+          for f in subdomains.txt all_endpoints.txt; do
+            git show "HEAD:resultados/$f" > "/tmp/prev/$f" 2>/dev/null || touch "/tmp/prev/$f"
+          done
+          comm -13 <(sort -u /tmp/prev/subdomains.txt) <(sort -u resultados/subdomains.txt) > resultados/NOVOS_subdomains.txt
+          comm -13 <(sort -u /tmp/prev/all_endpoints.txt) <(sort -u resultados/all_endpoints.txt) > resultados/NOVOS_endpoints.txt
           {
-            echo "## Recon $(date -u '+%Y-%m-%d %H:%M UTC') — DEEP=$DEEP"
+            echo "## Recon $(date -u '+%Y-%m-%d %H:%M UTC')"
             echo "- Subdominios vivos: $(wc -l < resultados/subdomains.txt)"
             echo "- **NOVOS subdominios**: $(wc -l < resultados/NOVOS_subdomains.txt)"
             echo "- **NOVOS endpoints**: $(wc -l < resultados/NOVOS_endpoints.txt)"
             echo "- Hosts vivos: $(wc -l < resultados/live_urls.txt)"
+            echo "- Endpoints: $(wc -l < resultados/all_endpoints.txt)"
             echo "- JS files: $(wc -l < resultados/js_files.txt)"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload artifact (backup)
+          git config user.email "actions@github.com"
+          git config user.name "Recon Bot"
+          git add resultados/ ":(exclude)resultados/js"
+          if git diff --cached --quiet; then
+            echo "Sem alteracoes."
+          else
+            git commit -m "recon: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+      - name: Upload artifact final
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: resultados-${{ github.run_number }}
           path: resultados/
           retention-days: 7
-
-      - name: Commit e push dos resultados
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name "Recon Bot"
-          git add resultados/ ":(exclude)resultados/js"
-          if git diff --cached --quiet; then
-            echo "Sem alteracoes para commitar."
-          else
-            git commit -m "recon: $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          fi
