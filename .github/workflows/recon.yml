@@ -2,7 +2,7 @@ name: Bug Bounty Recon - Multi-Alvos
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 03:00 UTC diario
+    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       alvo_manual:
@@ -32,6 +32,7 @@ jobs:
       MODO_COMPLETO:   ${{ github.event.inputs.modo_completo }}
       GITHUB_TOKEN_RECON: ${{ secrets.RECON_PAT_TOKEN }}
       RECON_COOKIE:    ${{ secrets.RECON_COOKIE }}
+      SUBFINDER_CONFIG: ${{ secrets.SUBFINDER_CONFIG }}
 
     steps:
       - name: Checkout
@@ -55,13 +56,22 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
-            echo "Baixando massdns do repositorio correto (blechschmidt)..."
             curl -Lfs "https://github.com/blechschmidt/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
             tar -xzf /tmp/massdns.tar.gz -C /tmp
             make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
             sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
           fi
           massdns --version || echo "massdns instalado"
+
+      - name: Configurar API keys do subfinder
+        run: |
+          mkdir -p ~/.config/subfinder
+          if [ -n "$SUBFINDER_CONFIG" ]; then
+            printf '%s\n' "$SUBFINDER_CONFIG" > ~/.config/subfinder/provider-config.yaml
+            echo "provider-config.yaml criado com suas API keys"
+          else
+            echo "AVISO: SUBFINDER_CONFIG vazio - usando apenas fontes gratuitas"
+          fi
 
       - name: Instalar ferramentas
         run: |
@@ -75,8 +85,7 @@ jobs:
           [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
           [ -x "$GOBIN_DIR/gau" ]         || go install -v github.com/lc/gau/v2/cmd/gau@latest
           [ -x "$GOBIN_DIR/github-subdomains" ] || go install -v github.com/gwen001/github-subdomains@latest
-          command -v uro >/dev/null               || pip3 install --quiet uro
-          echo "=== Ferramentas instaladas ==="
+          command -v uro >/dev/null || pip3 install --quiet uro
           ls -la "$GOBIN_DIR"
 
       - name: Cache de wordlists
@@ -92,54 +101,69 @@ jobs:
             "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt"
           [ -s wordlists/resolvers.txt ] || curl -sL --retry 3 -o wordlists/resolvers.txt \
             "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
-          echo "=== Wordlists ==="
           wc -l wordlists/*.txt
 
       - name: Executar Pipeline
         run: |
+          # Funcao de limpeza: remove ANSI colors, timestamps [HH:MM:SS],
+          # caixa alta, linhas vazias e qualquer coisa que nao pareca dominio
+          clean() {
+            sed -r 's/\x1b\[[0-9;]*[mK]//g' \
+              | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
+              | tr 'A-Z' 'a-z' \
+              | sed '/^[[:space:]]*$/d' \
+              | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
+          }
+
           mkdir -p resultados/js work /tmp/prev
-          # Guarda resultados do run anterior p/ diff
           for f in subdomains.txt all_endpoints.txt js_files.txt; do
             [ -f "resultados/$f" ] && cp "resultados/$f" "/tmp/prev/$f" || true
           done
 
-          # Alvos: manual ou targets.txt; sanitiza
           if [ -n "$TARGET_MANUAL" ]; then echo "$TARGET_MANUAL" > targets.txt; fi
           sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-z]*://||; s/\*\.//g' targets.txt
           grep -vE '^(#|$)' targets.txt > work/targets.clean || true
           mv work/targets.clean targets.txt
           echo "== ALVOS =="; cat targets.txt
 
-          # DEEP = segunda-feira OU botao manual
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
           echo "MODO DEEP: $DEEP"
 
-          echo "== PASSO 1: ASSET DISCOVERY (passivo) =="
-          subfinder -dL targets.txt -all -silent -t 50 -o work/passive.txt || true
+          echo "== PASSO 1: ASSET DISCOVERY (passivo com API keys) =="
+          subfinder -dL targets.txt -all -silent -t 50 -o work/passive_raw.txt || true
+          clean < work/passive_raw.txt > work/passive.txt
           while read -r t; do
             [ -z "$t" ] && continue
-            github-subdomains -d "$t" -t "$GITHUB_TOKEN_RECON" >> work/passive.txt 2>/dev/null || true
+            github-subdomains -d "$t" -t "$GITHUB_TOKEN_RECON" 2>/dev/null | clean >> work/passive.txt || true
           done < targets.txt
+          echo "Passivo: $(wc -l < work/passive.txt) subdominios"
 
           if [ "$DEEP" = "1" ]; then
             echo "== PASSO 1b: BRUTE FORCE (shuffledns) =="
             while read -r t; do
               [ -z "$t" ] && continue
-              shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
-                         -mode bruteforce -m /usr/local/bin/massdns -o "work/brute_$t.txt" || true
-              [ -f "work/brute_$t.txt" ] && cat "work/brute_$t.txt" >> work/brute_all.txt || true
+              timeout 1200 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
+                         -mode bruteforce -m /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
+              [ -f "work/brute_${t}_raw.txt" ] && clean < "work/brute_${t}_raw.txt" >> work/brute_all.txt || true
             done < targets.txt
           fi
 
-          cat work/passive.txt work/brute_all.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/subs_raw.txt
+          cat work/passive.txt work/brute_all.txt 2>/dev/null | sort -u > work/subs_raw.txt
           echo "Subdominios brutos: $(wc -l < work/subs_raw.txt)"
-          dnsx -l work/subs_raw.txt -r wordlists/resolvers.txt -retry 2 -silent -o work/subs_live.txt || true
+          timeout 900 dnsx -l work/subs_raw.txt -r wordlists/resolvers.txt -retry 2 -silent -o work/subs_live_raw.txt || true
+          clean < work/subs_live_raw.txt > work/subs_live.txt
 
           if [ "$DEEP" = "1" ]; then
-            echo "== PASSO 1c: PERMUTACOES (alterx) =="
-            alterx -l work/subs_live.txt -silent -o work/perms.txt || true
-            [ -s work/perms.txt ] && dnsx -l work/perms.txt -r wordlists/resolvers.txt -retry 2 -silent -o work/perms_live.txt || true
+            echo "== PASSO 1c: PERMUTACOES (alterx COM LIMITE) =="
+            # Cap de entrada: alterx em milhares de subs explode combinatoriamente
+            head -n 3000 work/subs_live.txt > work/alterx_in.txt
+            timeout 600 alterx -l work/alterx_in.txt -silent -o work/perms_all.txt || true
+            # Cap de saida: no maximo 200k permutacoes p/ resolver (evita as 5h do WSL)
+            head -n 200000 work/perms_all.txt | clean > work/perms.txt
+            echo "Permutacoes a resolver: $(wc -l < work/perms.txt)"
+            timeout 1200 dnsx -l work/perms.txt -r wordlists/resolvers.txt -retry 1 -silent -o work/perms_live_raw.txt || true
+            clean < work/perms_live_raw.txt > work/perms_live.txt
           fi
 
           cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > resultados/subdomains.txt
@@ -147,7 +171,7 @@ jobs:
 
           echo "== PASSO 2: PORTAS + PROBING HTTP =="
           if [ "$DEEP" = "1" ]; then
-            naabu -l resultados/subdomains.txt -top-ports 1000 -ep 22,23,3389 \
+            timeout 1500 naabu -l resultados/subdomains.txt -top-ports 1000 -ep 22,23,3389 \
                   -c 50 -rate 1500 -silent -o work/open-ports.txt || true
             cat work/open-ports.txt resultados/subdomains.txt | sort -u > work/httpx_input.txt
           else
@@ -165,11 +189,12 @@ jobs:
             if [ "$DEEP" = "1" ]; then
               COOKIE_ARG=""
               [ -n "$RECON_COOKIE" ] && COOKIE_ARG="-H Cookie:$RECON_COOKIE"
-              katana -list resultados/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+              head -n 200 resultados/live_urls.txt > work/crawl_in.txt
+              timeout 1500 katana -list work/crawl_in.txt -depth 3 -c 10 -aff -jsl -xhr \
                      -kf robotstxt,sitemapxml -timeout 10 -silent $COOKIE_ARG -o work/katana.txt || true
             fi
-            waybackurls -threads 10 < resultados/subdomains.txt > work/wayback.txt 2>/dev/null || true
-            gau --threads 4 < resultados/subdomains.txt > work/gau.txt 2>/dev/null || true
+            timeout 900 waybackurls -threads 10 < resultados/subdomains.txt > work/wayback.txt 2>/dev/null || true
+            timeout 900 gau --threads 4 < resultados/subdomains.txt > work/gau.txt 2>/dev/null || true
             cat work/katana.txt work/wayback.txt work/gau.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
             uro -l work/merged.txt -o resultados/all_endpoints.txt || cp work/merged.txt resultados/all_endpoints.txt
           else
