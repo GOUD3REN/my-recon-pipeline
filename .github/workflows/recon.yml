@@ -13,6 +13,14 @@ on:
         description: 'Forcar modo DEEP agora? (true/false)'
         required: false
         default: 'false'
+      usar_cookie:
+        description: 'Usar o cookie SALVO no secret RECON_COOKIE neste run? (true/false)'
+        required: false
+        default: 'false'
+      cookie_manual:
+        description: 'Cookie AVULSO so para este run (sobrescreve o secret). Vazio = ignora'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -120,7 +128,7 @@ jobs:
             work/deep.flag
           retention-days: 3
 
-  # ═══════════════ JOB 2: RESOLUÇÃO + PERMUTACOES ═══════════════
+  # ═══════════════ JOB 2: RESOLUCAO + PERMUTACOES ═══════════════
   resolve:
     needs: discovery
     runs-on: ubuntu-latest
@@ -168,7 +176,7 @@ jobs:
           if [ "$DEEP" = "1" ]; then
             echo "== PERMUTACOES (alterx) =="
             echo "Input do alterx: $(wc -l < work/subs_live.txt) dominios"
-            # tenta stdin primeiro; se falhar, fallback para -l (bug known de input do alterx)
+            # stdin primeiro; se o alterx reclamar, fallback para -l
             cat work/subs_live.txt | timeout 900 alterx -silent -o work/perms_all.txt \
               || timeout 900 alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
             if [ -s work/perms_all.txt ]; then
@@ -199,7 +207,9 @@ jobs:
     env:
       GOBIN_DIR: /home/runner/go/bin
       MODO_COMPLETO: ${{ github.event.inputs.modo_completo }}
-      RECON_COOKIE: ${{ secrets.RECON_COOKIE }}
+      STORED_COOKIE: ${{ secrets.RECON_COOKIE }}
+      USAR_COOKIE: ${{ github.event.inputs.usar_cookie }}
+      COOKIE_MANUAL: ${{ github.event.inputs.cookie_manual }}
     steps:
       - uses: actions/setup-go@v5
         with:
@@ -248,26 +258,29 @@ jobs:
           awk '{print $1}' out/live_hosts.txt | sort -u > out/live_urls.txt
           echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
-          # Zonas raiz (usadas pelo Wayback CDX)
           awk -F. '{print $(NF-1)"."$NF}' out/subdomains.txt | sort -u > out/root_domains.txt
 
           if [ -s out/live_urls.txt ] || [ -s out/subdomains.txt ]; then
-            # ── KATANA (crawl DEEP, com Cookie autenticado opcional) ──
-            if [ "$DEEP" = "1" ] && [ -s out/live_urls.txt ]; then
-              if [ -n "$RECON_COOKIE" ]; then
-                echo "Katana: crawl AUTENTICADO (Cookie do secret RECON_COOKIE)"
-                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                       -kf robotstxt,sitemapxml -timeout 10 -silent \
-                       -H "Cookie: $RECON_COOKIE" -o out/katana.txt || true
-              else
-                echo "Katana: crawl anonimo (RECON_COOKIE vazio)"
-                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                       -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
-              fi
+            # ── COOKIE: manual > secret (se usar_cookie=true) > anonimo ──
+            COOKIE=""
+            if [ -n "$COOKIE_MANUAL" ]; then
+              COOKIE="$COOKIE_MANUAL"
+            elif [ "$USAR_COOKIE" = "true" ]; then
+              COOKIE="$STORED_COOKIE"
+            fi
+            if [ -n "$COOKIE" ]; then
+              echo "::add-mask::$COOKIE"
+              echo "Katana: crawl AUTENTICADO (cookie ativo neste run)"
+              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                     -kf robotstxt,sitemapxml -timeout 10 -silent \
+                     -H "Cookie: $COOKIE" -o out/katana.txt || true
+            else
+              echo "Katana: crawl ANONIMO (sem cookie neste run)"
+              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                     -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
             fi
 
-            # ── WAYBACK: CDX direto, 1 request por zona raiz (sem burst = sem 429) ──
-            echo "== WAYBACK (CDX matchType=domain) =="
+            echo "== WAYBACK (CDX matchType=domain, 1 request por zona) =="
             : > out/wayback.txt
             while read -r root; do
               [ -z "$root" ] && continue
@@ -278,13 +291,11 @@ jobs:
             done < out/root_domains.txt
             sort -u out/wayback.txt -o out/wayback.txt
             echo "Wayback URLs: $(wc -l < out/wayback.txt)"
-            # Fallback legado se o CDX vier vazio
             if [ ! -s out/wayback.txt ] && [ -s out/subdomains.txt ]; then
               timeout 2400 waybackurls -threads 2 < out/subdomains.txt > out/wayback.txt 2>work/wayback_err.log || true
               [ -s work/wayback_err.log ] && head -n 3 work/wayback_err.log || true
             fi
 
-            # ── HAKRAWLER (substitui o gau) ──
             if [ -s out/live_urls.txt ]; then
               timeout 5400 hakrawler -d 3 -t 20 -u -subs < out/live_urls.txt > out/hakrawler.txt 2>/dev/null || true
             else
@@ -337,7 +348,6 @@ jobs:
           grep -iE '\.js(\?|$|#|&)' resultados/all_endpoints.txt 2>/dev/null | sort -u > resultados/js_files.txt || touch resultados/js_files.txt
           echo "JS files: $(wc -l < resultados/js_files.txt)"
           if [ -s resultados/js_files.txt ]; then
-            # -sr = store-response (baixa o body), -sd = diretorio (flag correta do httpx)
             head -n 500 resultados/js_files.txt | httpx -threads 20 -timeout 10 -silent -sr -sd resultados/js || true
             grep -rEioh "(api[_-]?key|secret|token|aws_access_key_id|private_key|bearer)[\"':= ]+[A-Za-z0-9_\-/+]{8,}" \
               resultados/js 2>/dev/null | sort -u | head -n 200 > resultados/js_secret_hits.txt || true
@@ -367,7 +377,7 @@ jobs:
             git commit -m "recon: $(date -u '+%Y-%m-%d %H:%M UTC')"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
-      - name: Notificação Telegram
+      - name: Notificacao Telegram
         if: always()
         env:
           TELEGRAM_TOKEN: "8830303342:AAGvbkgzp0cJrBWjAfCrz11AHL7Cj1DsRrQ"
