@@ -1,4 +1,0 @@
-http://embark.net/js/detectABP.js?adType=banner&blantantlyAnAdUrl=1
-http://embark.net/js/hydra/DynResize.jquery.js
-http://embark.net/js/hydra/jquery-1.8.3.min.js
-https://omni.embark.net/oindex.js
