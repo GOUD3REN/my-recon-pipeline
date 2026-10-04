@@ -100,7 +100,7 @@ jobs:
               | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
           }
           mkdir -p work
-          touch work/passive.txt work/passive_raw.txt work/brute_all.txt work/subs_raw.txt
+          touch work/passive.txt work/brute_all.txt work/subs_raw.txt
           if [ -n "$TARGET_MANUAL" ]; then echo "$TARGET_MANUAL" > targets.txt; fi
           sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-z]*://||; s/\*\.//g' targets.txt
           grep -vE '^(#|$)' targets.txt > work/t.tmp || true
@@ -134,7 +134,7 @@ jobs:
           cat work/passive.txt work/brute_all.txt 2>/dev/null | sort -u > work/subs_raw.txt
           echo "SUBS RAW: $(wc -l < work/subs_raw.txt)"
           cp targets.txt work/targets.txt
-      - name: Upload subs-raw (pasta work inteira = raiz unica)
+      - name: Upload subs-raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -142,7 +142,7 @@ jobs:
           path: work/
           retention-days: 3
 
-  # ═══════════════ JOB 2: RESOLVE ═══════════════
+  # ═══════════════ JOB 2: RESOLVE (com filtro de wildcard) ═══════════════
   resolve:
     needs: discovery
     runs-on: ubuntu-latest
@@ -160,20 +160,28 @@ jobs:
             /home/runner/go/bin
             /home/runner/.cache/go-build
           key: gobin-v1-${{ runner.os }}
+      - name: Deps + massdns (necessario p/ shuffledns resolve)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev build-essential
+          if ! command -v massdns >/dev/null; then
+            curl -Lfs "https://github.com/blechschmidt/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
+            tar -xzf /tmp/massdns.tar.gz -C /tmp
+            make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
+            sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
+          fi
       - name: Instalar ferramentas
         run: |
-          [ -x "$GOBIN_DIR/dnsx" ]   || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-          [ -x "$GOBIN_DIR/alterx" ] || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
+          [ -x "$GOBIN_DIR/dnsx" ]       || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+          [ -x "$GOBIN_DIR/alterx" ]     || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
+          [ -x "$GOBIN_DIR/shuffledns" ] || go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
       - name: Download subs-raw
         uses: actions/download-artifact@v4
         with:
           name: subs-raw
           path: work/
-      - name: Resolver + permutacoes
+      - name: Resolver + permutacoes (wildcard-safe)
         run: |
-          # DEFESA 1: se o artifact vier aninhado, desembaralha
           if [ -d work/work ]; then cp -rf work/work/. work/ 2>/dev/null || true; fi
-          # DEFESA 2: nenhum redirect morre por arquivo ausente
           touch work/subs_raw.txt work/deep.flag work/targets.txt \
                 work/subs_live_raw.txt work/subs_live.txt work/perms_all.txt \
                 work/perms_live_raw.txt work/perms_live.txt
@@ -189,32 +197,37 @@ jobs:
           DEEP=$(grep -o '1' work/deep.flag || echo 0)
           RAW=$(wc -l < work/subs_raw.txt)
           echo "Input recebido: $RAW subdominios"
-          if [ "$RAW" -eq 0 ]; then
-            echo "::error::SUBS RAW ZERO - discovery nao gerou input; o problema nao eh deste job"
-          fi
 
-          echo "== RESOLUCAO =="
-          dnsx -l work/subs_raw.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/subs_live_raw.txt || true
+          echo "== RESOLUCAO (shuffledns resolve = filtra wildcard) =="
+          timeout 5400 shuffledns -l work/subs_raw.txt -r work/resolvers_trusted.txt \
+                     -m /usr/local/bin/massdns -mode resolve -o work/subs_live_raw.txt || true
+          if [ ! -s work/subs_live_raw.txt ]; then
+            echo "::warning::shuffledns resolve nao gerou output - fallback dnsx (sem filtro de wildcard)"
+            dnsx -l work/subs_raw.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/subs_live_raw.txt || true
+          fi
           clean < work/subs_live_raw.txt > work/subs_live.txt
           RES=$(wc -l < work/subs_live.txt)
-          echo "Resolvidos: $RES de $RAW"
+          echo "Resolvidos (wildcard-filtered): $RES de $RAW"
           if [ "$RES" -eq 0 ] && [ "$RAW" -gt 0 ]; then
-            echo "::warning::dnsx zerou com resolvers trusted - retry com DNS do sistema"
-            dnsx -l work/subs_raw.txt -retry 5 -silent -o work/subs_live_raw2.txt || true
-            clean < work/subs_live_raw2.txt > work/subs_live.txt
-            RES=$(wc -l < work/subs_live.txt)
-            echo "Resolvidos (retry): $RES de $RAW"
+            echo "::error::RESOLUCAO ZERO - verifique sanity check e resolvers"
           fi
 
-          if [ "$DEEP" = "1" ] && [ -s work/subs_live.txt ]; then
+          PERMS=0
+          if [ "$DEEP" = "1" ] && [ "$RES" -gt 0 ]; then
             echo "== PERMUTACOES (alterx) =="
             cat work/subs_live.txt | timeout 900 alterx -silent -o work/perms_all.txt \
               || timeout 900 alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
             if [ -s work/perms_all.txt ]; then
-              echo "Permutacoes geradas: $(wc -l < work/perms_all.txt)"
-              timeout 18000 dnsx -l work/perms_all.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/perms_live_raw.txt || true
+              GEN=$(wc -l < work/perms_all.txt)
+              echo "Permutacoes geradas: $GEN"
+              timeout 9000 shuffledns -l work/perms_all.txt -r work/resolvers_trusted.txt \
+                         -m /usr/local/bin/massdns -mode resolve -o work/perms_live_raw.txt || true
+              if [ ! -s work/perms_live_raw.txt ]; then
+                dnsx -l work/perms_all.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/perms_live_raw.txt || true
+              fi
               clean < work/perms_live_raw.txt > work/perms_live.txt
-              echo "Permutacoes vivas: $(wc -l < work/perms_live.txt)"
+              PERMS=$(wc -l < work/perms_live.txt)
+              echo "Permutacoes vivas (wildcard-filtered): $PERMS"
             else
               echo "AVISO: alterx nao gerou permutacoes"
             fi
@@ -271,8 +284,10 @@ jobs:
       - name: Portas + HTTP + Content
         run: |
           if [ -d work/work ]; then cp -rf work/work/. work/ 2>/dev/null || true; fi
-          touch work/subdomains.txt work/targets.txt out/live_hosts.txt out/katana.txt out/hakrawler.txt out/wayback.txt work/merged.txt
-          mkdir -p out
+          mkdir -p out          # ← ANTES de qualquer touch em out/ (fix do crash #23)
+          touch work/subdomains.txt work/targets.txt work/merged.txt \
+                out/live_hosts.txt out/live_urls.txt out/katana.txt \
+                out/hakrawler.txt out/wayback.txt out/all_endpoints.txt out/open-ports.txt
           cp work/subdomains.txt out/subdomains.txt
           if [ -s work/targets.txt ]; then
             cp work/targets.txt out/wayback_roots.txt
@@ -366,7 +381,7 @@ jobs:
         with:
           go-version: 'stable'
           cache: false
-      - name: Cache httpx (key SEPARADA p/ nao poluir o cache principal)
+      - name: Cache httpx (key separada)
         uses: actions/cache@v4
         with:
           path: /home/runner/go/bin
