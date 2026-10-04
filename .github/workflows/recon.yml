@@ -95,7 +95,7 @@ jobs:
           sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-z]*://||; s/\*\.//g' targets.txt
           grep -vE '^(#|$)' targets.txt > work/t.tmp || true
           mv work/t.tmp targets.txt
-          echo "== ALVOS =="; cat targets.txt
+          echo "== ALVOS ($(wc -l < targets.txt)) =="; cat targets.txt
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
           echo "DEEP=$DEEP" | tee work/deep.flag
@@ -111,6 +111,7 @@ jobs:
           if [ "$DEEP" = "1" ]; then
             while read -r t; do
               [ -z "$t" ] && continue
+              echo "-> shuffledns: $t"
               timeout 5400 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
                          -mode bruteforce -m /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
               [ -f "work/brute_${t}_raw.txt" ] && clean < "work/brute_${t}_raw.txt" >> work/brute_all.txt || true
@@ -118,7 +119,7 @@ jobs:
           fi
           cat work/passive.txt work/brute_all.txt 2>/dev/null | sort -u > work/subs_raw.txt
           echo "SUBS RAW: $(wc -l < work/subs_raw.txt)"
-      - name: Upload subs_raw
+      - name: Upload subs-raw
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -126,6 +127,7 @@ jobs:
           path: |
             work/subs_raw.txt
             work/deep.flag
+            targets.txt
           retention-days: 3
 
   # ═══════════════ JOB 2: RESOLUCAO + PERMUTACOES ═══════════════
@@ -150,7 +152,7 @@ jobs:
         run: |
           [ -x "$GOBIN_DIR/dnsx" ]   || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
           [ -x "$GOBIN_DIR/alterx" ] || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
-      - name: Download subs_raw
+      - name: Download subs-raw
         uses: actions/download-artifact@v4
         with:
           name: subs-raw
@@ -173,10 +175,9 @@ jobs:
           clean < work/subs_live_raw.txt > work/subs_live.txt
           echo "Resolvidos: $(wc -l < work/subs_live.txt) de $(wc -l < work/subs_raw.txt)"
 
-          if [ "$DEEP" = "1" ]; then
+          if [ "$DEEP" = "1" ] && [ -s work/subs_live.txt ]; then
             echo "== PERMUTACOES (alterx) =="
             echo "Input do alterx: $(wc -l < work/subs_live.txt) dominios"
-            # stdin primeiro; se o alterx reclamar, fallback para -l
             cat work/subs_live.txt | timeout 900 alterx -silent -o work/perms_all.txt \
               || timeout 900 alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
             if [ -s work/perms_all.txt ]; then
@@ -191,12 +192,16 @@ jobs:
           fi
           cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > subdomains.txt
           echo "SUBDOMINIOS FINAIS: $(wc -l < subdomains.txt)"
-      - name: Upload subs_live
+          # repassa o targets.txt p/ frente (raizes corretas do Wayback)
+          cp work/targets.txt targets.txt 2>/dev/null || touch targets.txt
+      - name: Upload subs-live
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: subs-live
-          path: subdomains.txt
+          path: |
+            subdomains.txt
+            targets.txt
           retention-days: 3
 
   # ═══════════════ JOB 3: PORTAS + HTTP + CONTENT ═══════════════
@@ -229,7 +234,7 @@ jobs:
           [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
           [ -x "$GOBIN_DIR/hakrawler" ]   || go install -v github.com/hakluke/hakrawler@latest
           command -v uro >/dev/null || pip3 install --quiet uro
-      - name: Download subs_live
+      - name: Download subs-live
         uses: actions/download-artifact@v4
         with:
           name: subs-live
@@ -238,6 +243,14 @@ jobs:
         run: |
           mkdir -p out
           cp work/subdomains.txt out/subdomains.txt
+          # Raizes p/ Wayback: targets.txt reais (ccTLD-safe); fallback heuristico
+          if [ -s work/targets.txt ]; then
+            cp work/targets.txt out/wayback_roots.txt
+          else
+            awk -F. '{ if ($(NF-1) ~ /^(com|net|org|gov|edu|co|gob)$/ && NF>=3) print $(NF-2)"."$(NF-1)"."$NF; else print $(NF-1)"."$NF }' \
+              out/subdomains.txt | sort -u > out/wayback_roots.txt
+          fi
+          echo "== RAIZES WAYBACK =="; cat out/wayback_roots.txt
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
 
@@ -258,8 +271,6 @@ jobs:
           awk '{print $1}' out/live_hosts.txt | sort -u > out/live_urls.txt
           echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
-          awk -F. '{print $(NF-1)"."$NF}' out/subdomains.txt | sort -u > out/root_domains.txt
-
           if [ -s out/live_urls.txt ] || [ -s out/subdomains.txt ]; then
             # ── COOKIE: manual > secret (se usar_cookie=true) > anonimo ──
             COOKIE=""
@@ -268,19 +279,21 @@ jobs:
             elif [ "$USAR_COOKIE" = "true" ]; then
               COOKIE="$STORED_COOKIE"
             fi
-            if [ -n "$COOKIE" ]; then
-              echo "::add-mask::$COOKIE"
-              echo "Katana: crawl AUTENTICADO (cookie ativo neste run)"
-              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                     -kf robotstxt,sitemapxml -timeout 10 -silent \
-                     -H "Cookie: $COOKIE" -o out/katana.txt || true
-            else
-              echo "Katana: crawl ANONIMO (sem cookie neste run)"
-              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                     -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
+            if [ "$DEEP" = "1" ] && [ -s out/live_urls.txt ]; then
+              if [ -n "$COOKIE" ]; then
+                echo "::add-mask::$COOKIE"
+                echo "Katana: crawl AUTENTICADO"
+                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                       -kf robotstxt,sitemapxml -timeout 10 -silent \
+                       -H "Cookie: $COOKIE" -o out/katana.txt || true
+              else
+                echo "Katana: crawl ANONIMO"
+                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                       -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
+              fi
             fi
 
-            echo "== WAYBACK (CDX matchType=domain, 1 request por zona) =="
+            echo "== WAYBACK (CDX matchType=domain por raiz) =="
             : > out/wayback.txt
             while read -r root; do
               [ -z "$root" ] && continue
@@ -288,7 +301,7 @@ jobs:
                 "https://web.archive.org/cdx/search/cdx?url=${root}/*&matchType=domain&output=text&fl=original&collapse=urlkey&limit=50000" \
                 >> out/wayback.txt || true
               sleep 2
-            done < out/root_domains.txt
+            done < out/wayback_roots.txt
             sort -u out/wayback.txt -o out/wayback.txt
             echo "Wayback URLs: $(wc -l < out/wayback.txt)"
             if [ ! -s out/wayback.txt ] && [ -s out/subdomains.txt ]; then
