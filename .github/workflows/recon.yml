@@ -61,10 +61,20 @@ jobs:
             make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
             sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
           fi
-      - name: API keys subfinder
+      - name: API keys subfinder (com validacao de YAML)
         run: |
           mkdir -p ~/.config/subfinder
-          [ -n "$SUBFINDER_CONFIG" ] && printf '%s\n' "$SUBFINDER_CONFIG" > ~/.config/subfinder/provider-config.yaml
+          if [ -n "$SUBFINDER_CONFIG" ]; then
+            printf '%s\n' "$SUBFINDER_CONFIG" > ~/.config/subfinder/provider-config.yaml
+            if python3 -c "import yaml; yaml.safe_load(open('$HOME/.config/subfinder/provider-config.yaml'))" 2>/dev/null; then
+              echo "provider-config.yaml: YAML valido"
+            else
+              echo "::error::SUBFINDER_CONFIG eh YAML INVALIDO - o subfinder vai falhar. Corrija o secret."
+              cat ~/.config/subfinder/provider-config.yaml
+            fi
+          else
+            echo "::warning::SUBFINDER_CONFIG vazio - subfinder so com fontes gratuitas"
+          fi
       - name: Instalar ferramentas
         run: |
           [ -x "$GOBIN_DIR/subfinder" ]   || go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
@@ -100,13 +110,18 @@ jobs:
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
           echo "DEEP=$DEEP" | tee work/deep.flag
 
-          subfinder -dL targets.txt -all -silent -t 50 -o work/passive_raw.txt || true
+          # stderr VISIVEL: se o subfinder morrer, o motivo aparece no log
+          subfinder -dL targets.txt -all -silent -t 50 -o work/passive_raw.txt || echo "::warning::subfinder saiu com erro (code $?)"
           clean < work/passive_raw.txt > work/passive.txt
           while read -r t; do
             [ -z "$t" ] && continue
             github-subdomains -d "$t" -t "$GITHUB_TOKEN_RECON" 2>/dev/null | clean >> work/passive.txt || true
           done < targets.txt
-          echo "Passivo: $(wc -l < work/passive.txt)"
+          PASSIVE=$(wc -l < work/passive.txt)
+          echo "Passivo: $PASSIVE"
+          if [ "$PASSIVE" -eq 0 ]; then
+            echo "::error::PASSIVO ZERO. Causas provaveis: (1) secret SUBFINDER_CONFIG com YAML/keys invalidos; (2) fontes passivas bloqueando IP do Azure (crt.sh/Cloudflare); (3) targets.txt vazio. Veja o stderr do subfinder acima."
+          fi
 
           if [ "$DEEP" = "1" ]; then
             while read -r t; do
@@ -169,11 +184,25 @@ jobs:
           echo "== SANITY CHECK DNS =="
           printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers_trusted.txt -silent -retry 3 || true
           DEEP=$(grep -o '1' work/deep.flag || echo 0)
+          RAW=$(wc -l < work/subs_raw.txt)
+          if [ "$RAW" -eq 0 ]; then
+            echo "::error::SUBS RAW ZERO - o job discovery nao gerou nada. O problema NAO eh deste job."
+          fi
 
           echo "== RESOLUCAO =="
           dnsx -l work/subs_raw.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/subs_live_raw.txt || true
           clean < work/subs_live_raw.txt > work/subs_live.txt
-          echo "Resolvidos: $(wc -l < work/subs_live.txt) de $(wc -l < work/subs_raw.txt)"
+          RES=$(wc -l < work/subs_live.txt)
+          echo "Resolvidos: $RES de $RAW"
+
+          # Fallback: se zerou mas tinha input, tenta de novo com resolvers do sistema do runner
+          if [ "$RES" -eq 0 ] && [ "$RAW" -gt 0 ]; then
+            echo "::warning::dnsx zerou com resolvers trusted - retry com DNS do sistema"
+            dnsx -l work/subs_raw.txt -retry 5 -silent -o work/subs_live_raw2.txt || true
+            clean < work/subs_live_raw2.txt > work/subs_live.txt
+            RES=$(wc -l < work/subs_live.txt)
+            echo "Resolvidos (retry): $RES de $RAW"
+          fi
 
           if [ "$DEEP" = "1" ] && [ -s work/subs_live.txt ]; then
             echo "== PERMUTACOES (alterx) =="
@@ -192,7 +221,6 @@ jobs:
           fi
           cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > subdomains.txt
           echo "SUBDOMINIOS FINAIS: $(wc -l < subdomains.txt)"
-          # repassa o targets.txt p/ frente (raizes corretas do Wayback)
           cp work/targets.txt targets.txt 2>/dev/null || touch targets.txt
       - name: Upload subs-live
         if: always()
@@ -243,7 +271,6 @@ jobs:
         run: |
           mkdir -p out
           cp work/subdomains.txt out/subdomains.txt
-          # Raizes p/ Wayback: targets.txt reais (ccTLD-safe); fallback heuristico
           if [ -s work/targets.txt ]; then
             cp work/targets.txt out/wayback_roots.txt
           else
@@ -271,55 +298,58 @@ jobs:
           awk '{print $1}' out/live_hosts.txt | sort -u > out/live_urls.txt
           echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
-          if [ -s out/live_urls.txt ] || [ -s out/subdomains.txt ]; then
-            # ── COOKIE: manual > secret (se usar_cookie=true) > anonimo ──
-            COOKIE=""
-            if [ -n "$COOKIE_MANUAL" ]; then
-              COOKIE="$COOKIE_MANUAL"
-            elif [ "$USAR_COOKIE" = "true" ]; then
-              COOKIE="$STORED_COOKIE"
-            fi
-            if [ "$DEEP" = "1" ] && [ -s out/live_urls.txt ]; then
-              if [ -n "$COOKIE" ]; then
-                echo "::add-mask::$COOKIE"
-                echo "Katana: crawl AUTENTICADO"
-                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                       -kf robotstxt,sitemapxml -timeout 10 -silent \
-                       -H "Cookie: $COOKIE" -o out/katana.txt || true
-              else
-                echo "Katana: crawl ANONIMO"
-                timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
-                       -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
-              fi
-            fi
+          # ── WAYBACK CDX: RODA SEMPRE (historico nao depende de host vivo) ──
+          echo "== WAYBACK (CDX matchType=domain por raiz) =="
+          : > out/wayback.txt
+          while read -r root; do
+            [ -z "$root" ] && continue
+            curl -s --retry 3 --retry-delay 2 --max-time 300 \
+              "https://web.archive.org/cdx/search/cdx?url=${root}/*&matchType=domain&output=text&fl=original&collapse=urlkey&limit=50000" \
+              >> out/wayback.txt || true
+            sleep 2
+          done < out/wayback_roots.txt
+          sort -u out/wayback.txt -o out/wayback.txt
+          echo "Wayback URLs: $(wc -l < out/wayback.txt)"
+          if [ ! -s out/wayback.txt ] && [ -s out/subdomains.txt ]; then
+            timeout 2400 waybackurls -threads 2 < out/subdomains.txt > out/wayback.txt 2>work/wayback_err.log || true
+            [ -s work/wayback_err.log ] && head -n 3 work/wayback_err.log || true
+          fi
 
-            echo "== WAYBACK (CDX matchType=domain por raiz) =="
-            : > out/wayback.txt
-            while read -r root; do
-              [ -z "$root" ] && continue
-              curl -s --retry 3 --retry-delay 2 --max-time 300 \
-                "https://web.archive.org/cdx/search/cdx?url=${root}/*&matchType=domain&output=text&fl=original&collapse=urlkey&limit=50000" \
-                >> out/wayback.txt || true
-              sleep 2
-            done < out/wayback_roots.txt
-            sort -u out/wayback.txt -o out/wayback.txt
-            echo "Wayback URLs: $(wc -l < out/wayback.txt)"
-            if [ ! -s out/wayback.txt ] && [ -s out/subdomains.txt ]; then
-              timeout 2400 waybackurls -threads 2 < out/subdomains.txt > out/wayback.txt 2>work/wayback_err.log || true
-              [ -s work/wayback_err.log ] && head -n 3 work/wayback_err.log || true
-            fi
-
-            if [ -s out/live_urls.txt ]; then
-              timeout 5400 hakrawler -d 3 -t 20 -u -subs < out/live_urls.txt > out/hakrawler.txt 2>/dev/null || true
+          # ── CRAWL (so se existir host vivo) ──
+          COOKIE=""
+          if [ -n "$COOKIE_MANUAL" ]; then
+            COOKIE="$COOKIE_MANUAL"
+          elif [ "$USAR_COOKIE" = "true" ]; then
+            COOKIE="$STORED_COOKIE"
+          fi
+          if [ "$DEEP" = "1" ] && [ -s out/live_urls.txt ]; then
+            if [ -n "$COOKIE" ]; then
+              echo "::add-mask::$COOKIE"
+              echo "Katana: crawl AUTENTICADO"
+              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                     -kf robotstxt,sitemapxml -timeout 10 -silent \
+                     -H "Cookie: $COOKIE" -o out/katana.txt || true
             else
-              touch out/hakrawler.txt
+              echo "Katana: crawl ANONIMO"
+              timeout 12000 katana -list out/live_urls.txt -depth 3 -c 10 -aff -jsl -xhr \
+                     -kf robotstxt,sitemapxml -timeout 10 -silent -o out/katana.txt || true
             fi
-            echo "Hakrawler URLs: $(wc -l < out/hakrawler.txt)"
+          else
+            touch out/katana.txt
+          fi
+          if [ -s out/live_urls.txt ]; then
+            timeout 5400 hakrawler -d 3 -t 20 -u -subs < out/live_urls.txt > out/hakrawler.txt 2>/dev/null || true
+          else
+            touch out/hakrawler.txt
+          fi
+          echo "Hakrawler URLs: $(wc -l < out/hakrawler.txt)"
 
-            cat out/katana.txt out/wayback.txt out/hakrawler.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
+          # ── MERGE: agora SEMPRE roda (wayback pode ter conteudo mesmo sem hosts vivos) ──
+          cat out/katana.txt out/wayback.txt out/hakrawler.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
+          if [ -s work/merged.txt ]; then
             uro -l work/merged.txt -o out/all_endpoints.txt || cp work/merged.txt out/all_endpoints.txt
           else
-            touch out/all_endpoints.txt out/wayback.txt out/hakrawler.txt out/katana.txt
+            touch out/all_endpoints.txt
           fi
           echo "Endpoints: $(wc -l < out/all_endpoints.txt)"
       - name: Upload surface
