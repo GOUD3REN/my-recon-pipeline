@@ -142,7 +142,7 @@ jobs:
           path: work/
           retention-days: 3
 
-  # ═══════════════ JOB 2: RESOLVE (com filtro de wildcard) ═══════════════
+  # ═══════════════ JOB 2: RESOLVE ═══════════════
   resolve:
     needs: discovery
     runs-on: ubuntu-latest
@@ -160,7 +160,7 @@ jobs:
             /home/runner/go/bin
             /home/runner/.cache/go-build
           key: gobin-v1-${{ runner.os }}
-      - name: Deps + massdns (necessario p/ shuffledns resolve)
+      - name: Deps + massdns
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev build-essential
           if ! command -v massdns >/dev/null; then
@@ -182,23 +182,18 @@ jobs:
       - name: Resolver + permutacoes (wildcard-safe)
         run: |
           if [ -d work/work ]; then cp -rf work/work/. work/ 2>/dev/null || true; fi
-          touch work/subs_raw.txt work/deep.flag work/targets.txt \
-                work/subs_live_raw.txt work/subs_live.txt work/perms_all.txt \
-                work/perms_live_raw.txt work/perms_live.txt
-          
-          # Baixa lista massiva de resolvers para evitar bloqueio de UDP/rate-limit no GitHub Actions
-          curl -sL --retry 3 -o work/resolvers.txt "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
+          touch work/subs_raw.txt work/deep.flag work/targets.txt work/passive.txt work/brute_all.txt \
+                work/subs_live_raw.txt work/subs_live.txt work/perms_all.txt work/perms_live_raw.txt work/perms_live.txt
+          curl -sL --retry 3 -o work/resolvers.txt "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" || true
           if [ ! -s work/resolvers.txt ]; then
             printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > work/resolvers.txt
           fi
-
           clean() {
             sed -r 's/\x1b\[[0-9;]*[mK]//g' \
               | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
               | tr 'A-Z' 'a-z' | sed '/^[[:space:]]*$/d' \
               | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
           }
-          
           echo "== SANITY CHECK DNS =="
           printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers.txt -silent -retry 3 || true
           DEEP=$(grep -o '1' work/deep.flag || echo 0)
@@ -208,10 +203,9 @@ jobs:
           echo "== RESOLUCAO (shuffledns resolve = filtra wildcard) =="
           timeout 5400 shuffledns -l work/subs_raw.txt -r work/resolvers.txt \
                      -bin /usr/local/bin/massdns -mode resolve -o work/subs_live_raw.txt -silent || true
-                     
           if [ ! -s work/subs_live_raw.txt ]; then
-            echo "::warning::shuffledns resolve nao gerou output - fallback dnsx"
-            dnsx -l work/subs_raw.txt -r work/resolvers.txt -retry 3 -silent -o work/subs_live_raw.txt -rc 204,301,302,307,400,401,403,404,405,410,429,500,502,503,504 || true
+            echo "::warning::shuffledns resolve vazio - fallback dnsx"
+            dnsx -l work/subs_raw.txt -r work/resolvers.txt -retry 3 -silent -o work/subs_live_raw.txt || true
           fi
           clean < work/subs_live_raw.txt > work/subs_live.txt
           RES=$(wc -l < work/subs_live.txt)
@@ -231,7 +225,7 @@ jobs:
               timeout 9000 shuffledns -l work/perms_all.txt -r work/resolvers.txt \
                          -bin /usr/local/bin/massdns -mode resolve -o work/perms_live_raw.txt -silent || true
               if [ ! -s work/perms_live_raw.txt ]; then
-                dnsx -l work/perms_all.txt -r work/resolvers.txt -retry 3 -silent -o work/perms_live_raw.txt -rc 204,301,302,307,400,401,403,404,405,410,429,500,502,503,504 || true
+                dnsx -l work/perms_all.txt -r work/resolvers.txt -retry 3 -silent -o work/perms_live_raw.txt || true
               fi
               clean < work/perms_live_raw.txt > work/perms_live.txt
               PERMS=$(wc -l < work/perms_live.txt)
@@ -240,9 +234,11 @@ jobs:
               echo "AVISO: alterx nao gerou permutacoes"
             fi
           fi
-          cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > subdomains.txt
-          touch subdomains.txt
-          echo "SUBDOMINIOS FINAIS: $(wc -l < subdomains.txt)"
+          cat work/subs_live.txt work/perms_live.txt 2>/dev/null | sort -u > alterx.txt
+          touch alterx.txt
+          echo "SUBDOMINIOS FINAIS (alterx.txt): $(wc -l < alterx.txt)"
+          cp work/passive.txt passive.txt 2>/dev/null || touch passive.txt
+          cp work/brute_all.txt brute.txt 2>/dev/null || touch brute.txt
           cp work/targets.txt targets.txt 2>/dev/null || touch targets.txt
       - name: Upload subs-live
         if: always()
@@ -250,7 +246,9 @@ jobs:
         with:
           name: subs-live
           path: |
-            subdomains.txt
+            alterx.txt
+            passive.txt
+            brute.txt
             targets.txt
           retention-days: 3
 
@@ -283,7 +281,6 @@ jobs:
           [ -x "$GOBIN_DIR/katana" ]      || go install -v github.com/projectdiscovery/katana/cmd/katana@latest
           [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
           [ -x "$GOBIN_DIR/hakrawler" ]   || go install -v github.com/hakluke/hakrawler@latest
-          # Fix para Ubuntu 24.04 (PEP 668)
           pip3 install --break-system-packages uro || pip3 install --user uro
           echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Download subs-live
@@ -294,34 +291,33 @@ jobs:
       - name: Portas + HTTP + Content
         run: |
           if [ -d work/work ]; then cp -rf work/work/. work/ 2>/dev/null || true; fi
-          mkdir -p out          # ← ANTES de qualquer touch em out/ (fix do crash #23)
-          touch work/subdomains.txt work/targets.txt work/merged.txt \
-                out/live_hosts.txt out/live_urls.txt out/katana.txt \
-                out/hakrawler.txt out/wayback.txt out/all_endpoints.txt out/open-ports.txt
-          cp work/subdomains.txt out/subdomains.txt
-          if [ -s work/targets.txt ]; then
-            cp work/targets.txt out/wayback_roots.txt
-          else
-            awk -F. '{ if ($(NF-1) ~ /^(com|net|org|gov|edu|co|gob)$/ && NF>=3) print $(NF-2)"."$(NF-1)"."$NF; else print $(NF-1)"."$NF }' \
-              out/subdomains.txt | sort -u > out/wayback_roots.txt
-          fi
+          mkdir -p out
+          touch work/alterx.txt work/targets.txt work/passive.txt work/brute.txt work/merged.txt \
+                out/alterx.txt out/passive.txt out/brute.txt out/targets.txt out/wayback_roots.txt \
+                out/open-ports.txt out/live.txt out/live_urls.txt out/katana.txt out/hakrawler.txt \
+                out/wayback.txt out/ep.txt
+          cp work/alterx.txt  out/alterx.txt
+          cp work/passive.txt out/passive.txt
+          cp work/brute.txt   out/brute.txt
+          cp work/targets.txt out/targets.txt
+          cp work/targets.txt out/wayback_roots.txt
           echo "== RAIZES WAYBACK =="; cat out/wayback_roots.txt
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
 
-          if [ "$DEEP" = "1" ] && [ -s out/subdomains.txt ]; then
-            timeout 12000 naabu -l out/subdomains.txt -top-ports 1000 -ep 22,23,3389 \
+          if [ "$DEEP" = "1" ] && [ -s out/alterx.txt ]; then
+            timeout 12000 naabu -l out/alterx.txt -top-ports 1000 -ep 22,23,3389 \
                   -c 50 -rate 1500 -silent -o out/open-ports.txt || true
-            cat out/open-ports.txt out/subdomains.txt | sort -u > work/httpx_in.txt
+            cat out/open-ports.txt out/alterx.txt | sort -u > work/httpx_in.txt
           else
-            cp out/subdomains.txt work/httpx_in.txt
+            cp out/alterx.txt work/httpx_in.txt
           fi
           if [ -s work/httpx_in.txt ]; then
             httpx -l work/httpx_in.txt -ports 80,443,8000,8080,8443,8888 \
                   -title -sc -cl -td -server -location -fr -fc 404 \
-                  -threads 50 -timeout 10 -retries 1 -silent -o out/live_hosts.txt || true
+                  -threads 50 -timeout 10 -retries 1 -silent -o out/live.txt || true
           fi
-          awk '{print $1}' out/live_hosts.txt | sort -u > out/live_urls.txt
+          awk '{print $1}' out/live.txt | sort -u > out/live_urls.txt
           echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
           echo "== WAYBACK (CDX matchType=domain por raiz) =="
@@ -335,8 +331,8 @@ jobs:
           done < out/wayback_roots.txt
           sort -u out/wayback.txt -o out/wayback.txt
           echo "Wayback URLs: $(wc -l < out/wayback.txt)"
-          if [ ! -s out/wayback.txt ] && [ -s out/subdomains.txt ]; then
-            timeout 2400 waybackurls -threads 2 < out/subdomains.txt > out/wayback.txt 2>work/wayback_err.log || true
+          if [ ! -s out/wayback.txt ] && [ -s out/alterx.txt ]; then
+            timeout 2400 waybackurls -threads 2 < out/alterx.txt > out/wayback.txt 2>work/wayback_err.log || true
           fi
 
           COOKIE=""
@@ -365,11 +361,11 @@ jobs:
 
           cat out/katana.txt out/wayback.txt out/hakrawler.txt 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u > work/merged.txt
           if [ -s work/merged.txt ]; then
-            uro -l work/merged.txt -o out/all_endpoints.txt || cp work/merged.txt out/all_endpoints.txt
+            uro -l work/merged.txt -o out/ep.txt || cp work/merged.txt out/ep.txt
           else
-            touch out/all_endpoints.txt
+            touch out/ep.txt
           fi
-          echo "Endpoints: $(wc -l < out/all_endpoints.txt)"
+          echo "Endpoints: $(wc -l < out/ep.txt)"
       - name: Upload surface
         if: always()
         uses: actions/upload-artifact@v4
@@ -407,66 +403,66 @@ jobs:
       - name: JS + diff + push
         run: |
           mkdir -p resultados/js
-          touch resultados/all_endpoints.txt resultados/subdomains.txt resultados/live_urls.txt resultados/wayback.txt
-          grep -iE '\.js(\?|$|#|&)' resultados/all_endpoints.txt 2>/dev/null | sort -u > resultados/js_files.txt || touch resultados/js_files.txt
-          echo "JS files: $(wc -l < resultados/js_files.txt)"
-          if [ -s resultados/js_files.txt ]; then
-            head -n 500 resultados/js_files.txt | httpx -threads 20 -timeout 10 -silent -sr -sd resultados/js || true
+          touch resultados/ep.txt resultados/alterx.txt resultados/live_urls.txt resultados/wayback.txt
+          grep -iE '\.js(\?|$|#|&)' resultados/ep.txt 2>/dev/null | sort -u > resultados/js1.txt || touch resultados/js1.txt
+          echo "JS files: $(wc -l < resultados/js1.txt)"
+          if [ -s resultados/js1.txt ]; then
+            head -n 500 resultados/js1.txt | httpx -threads 20 -timeout 10 -silent -sr -sd resultados/js || true
             grep -rEioh "(api[_-]?key|secret|token|aws_access_key_id|private_key|bearer)[\"':= ]+[A-Za-z0-9_\-/+]{8,}" \
               resultados/js 2>/dev/null | sort -u | head -n 200 > resultados/js_secret_hits.txt || true
           fi
           mkdir -p /tmp/prev
-          for f in subdomains.txt all_endpoints.txt; do
+          for f in alterx.txt ep.txt; do
             git show "HEAD:resultados/$f" > "/tmp/prev/$f" 2>/dev/null || touch "/tmp/prev/$f"
           done
-          comm -13 <(sort -u /tmp/prev/subdomains.txt) <(sort -u resultados/subdomains.txt) > resultados/NOVOS_subdomains.txt
-          comm -13 <(sort -u /tmp/prev/all_endpoints.txt) <(sort -u resultados/all_endpoints.txt) > resultados/NOVOS_endpoints.txt
+          comm -13 <(sort -u /tmp/prev/alterx.txt) <(sort -u resultados/alterx.txt) > resultados/NOVOS_subdomains.txt
+          comm -13 <(sort -u /tmp/prev/ep.txt) <(sort -u resultados/ep.txt) > resultados/NOVOS_endpoints.txt
           {
             echo "## Recon $(date -u '+%Y-%m-%d %H:%M UTC')"
-            echo "- Subdominios vivos: $(wc -l < resultados/subdomains.txt)"
+            echo "- Subdominios vivos (alterx.txt): $(wc -l < resultados/alterx.txt)"
             echo "- **NOVOS subdominios**: $(wc -l < resultados/NOVOS_subdomains.txt)"
             echo "- **NOVOS endpoints**: $(wc -l < resultados/NOVOS_endpoints.txt)"
             echo "- Hosts vivos: $(wc -l < resultados/live_urls.txt)"
-            echo "- Endpoints: $(wc -l < resultados/all_endpoints.txt)"
+            echo "- Endpoints (ep.txt): $(wc -l < resultados/ep.txt)"
             echo "- Wayback URLs: $(wc -l < resultados/wayback.txt)"
-            echo "- JS files: $(wc -l < resultados/js_files.txt)"
+            echo "- JS files (js1.txt): $(wc -l < resultados/js1.txt)"
           } >> "$GITHUB_STEP_SUMMARY"
           git config user.email "actions@github.com"
           git config user.name "Recon Bot"
-          git add resultados/ ":(exclude)resultados/js"
+          git add resultados/ ":(exclude)resultados/js" ":(exclude)resultados/live_urls.txt" ":(exclude)resultados/wayback_roots.txt"
           if git diff --cached --quiet; then
             echo "Sem alteracoes."
           else
             git commit -m "recon: $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push || echo "Falha no push, tentando com token..."
+            git push || echo "::warning::push falhou"
           fi
       - name: Notificacao Telegram
         if: always()
         env:
-          # ⚠️ CORRIGIDO: Token movido para Secrets. Crie o secret TELEGRAM_TOKEN no repositório.
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          # Fallback: se o secret TELEGRAM_TOKEN nao existir, usa o token inline (repo privado)
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || '8830303342:AAGvbkgzp0cJrBWjAfCrz11AHL7Cj1DsRrQ' }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -z "$TELEGRAM_CHAT_ID" ] || [ -z "$TELEGRAM_TOKEN" ]; then
-            echo "TELEGRAM_CHAT_ID ou TELEGRAM_TOKEN nao configurado - pulando."
+            echo "TELEGRAM_CHAT_ID/TELEGRAM_TOKEN ausentes - pulando."
             exit 0
           fi
           NOVOS_SUBS=$(wc -l < resultados/NOVOS_subdomains.txt 2>/dev/null || echo 0)
           NOVOS_ENDS=$(wc -l < resultados/NOVOS_endpoints.txt 2>/dev/null || echo 0)
-          TOTAL_SUBS=$(wc -l < resultados/subdomains.txt 2>/dev/null || echo 0)
+          TOTAL_SUBS=$(wc -l < resultados/alterx.txt 2>/dev/null || echo 0)
           HOSTS_VIVOS=$(wc -l < resultados/live_urls.txt 2>/dev/null || echo 0)
-          TOTAL_ENDS=$(wc -l < resultados/all_endpoints.txt 2>/dev/null || echo 0)
-          JS_FILES=$(wc -l < resultados/js_files.txt 2>/dev/null || echo 0)
+          TOTAL_ENDS=$(wc -l < resultados/ep.txt 2>/dev/null || echo 0)
+          JS_FILES=$(wc -l < resultados/js1.txt 2>/dev/null || echo 0)
           WAYBACK=$(wc -l < resultados/wayback.txt 2>/dev/null || echo 0)
           MSG="🚀 *Recon Finalizado*%0A"
           MSG+="📅 $(date -u '+%Y-%m-%d %H:%M UTC')%0A%0A"
-          MSG+="📦 *Subdomínios Totais*: ${TOTAL_SUBS}%0A"
+          MSG+="📦 *Subdomínios (alterx.txt)*: ${TOTAL_SUBS}%0A"
           MSG+="🔥 *NOVOS Subdomínios*: ${NOVOS_SUBS}%0A"
           MSG+="🔗 *NOVOS Endpoints*: ${NOVOS_ENDS}%0A%0A"
           MSG+="🌐 *Hosts Vivos*: ${HOSTS_VIVOS}%0A"
-          MSG+="📂 *Total Endpoints*: ${TOTAL_ENDS}%0A"
+          MSG+="📂 *Endpoints (ep.txt)*: ${TOTAL_ENDS}%0A"
           MSG+="🗄 *Wayback URLs*: ${WAYBACK}%0A"
-          MSG+="📜 *JS Files*: ${JS_FILES}%0A"
+          MSG+="📜 *JS (js1.txt)*: ${JS_FILES}%0A"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
