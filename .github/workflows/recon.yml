@@ -127,7 +127,7 @@ jobs:
               [ -z "$t" ] && continue
               echo "-> shuffledns: $t"
               timeout 5400 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
-                         -mode bruteforce -m /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
+                         -mode bruteforce -bin /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
               [ -f "work/brute_${t}_raw.txt" ] && clean < "work/brute_${t}_raw.txt" >> work/brute_all.txt || true
             done < targets.txt
           fi
@@ -185,25 +185,33 @@ jobs:
           touch work/subs_raw.txt work/deep.flag work/targets.txt \
                 work/subs_live_raw.txt work/subs_live.txt work/perms_all.txt \
                 work/perms_live_raw.txt work/perms_live.txt
+          
+          # Baixa lista massiva de resolvers para evitar bloqueio de UDP/rate-limit no GitHub Actions
+          curl -sL --retry 3 -o work/resolvers.txt "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
+          if [ ! -s work/resolvers.txt ]; then
+            printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > work/resolvers.txt
+          fi
+
           clean() {
             sed -r 's/\x1b\[[0-9;]*[mK]//g' \
               | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
               | tr 'A-Z' 'a-z' | sed '/^[[:space:]]*$/d' \
               | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
           }
-          printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > work/resolvers_trusted.txt
+          
           echo "== SANITY CHECK DNS =="
-          printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers_trusted.txt -silent -retry 3 || true
+          printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers.txt -silent -retry 3 || true
           DEEP=$(grep -o '1' work/deep.flag || echo 0)
           RAW=$(wc -l < work/subs_raw.txt)
           echo "Input recebido: $RAW subdominios"
 
           echo "== RESOLUCAO (shuffledns resolve = filtra wildcard) =="
-          timeout 5400 shuffledns -l work/subs_raw.txt -r work/resolvers_trusted.txt \
-                     -m /usr/local/bin/massdns -mode resolve -o work/subs_live_raw.txt || true
+          timeout 5400 shuffledns -l work/subs_raw.txt -r work/resolvers.txt \
+                     -bin /usr/local/bin/massdns -mode resolve -o work/subs_live_raw.txt -silent || true
+                     
           if [ ! -s work/subs_live_raw.txt ]; then
-            echo "::warning::shuffledns resolve nao gerou output - fallback dnsx (sem filtro de wildcard)"
-            dnsx -l work/subs_raw.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/subs_live_raw.txt || true
+            echo "::warning::shuffledns resolve nao gerou output - fallback dnsx"
+            dnsx -l work/subs_raw.txt -r work/resolvers.txt -retry 3 -silent -o work/subs_live_raw.txt -rc 204,301,302,307,400,401,403,404,405,410,429,500,502,503,504 || true
           fi
           clean < work/subs_live_raw.txt > work/subs_live.txt
           RES=$(wc -l < work/subs_live.txt)
@@ -220,10 +228,10 @@ jobs:
             if [ -s work/perms_all.txt ]; then
               GEN=$(wc -l < work/perms_all.txt)
               echo "Permutacoes geradas: $GEN"
-              timeout 9000 shuffledns -l work/perms_all.txt -r work/resolvers_trusted.txt \
-                         -m /usr/local/bin/massdns -mode resolve -o work/perms_live_raw.txt || true
+              timeout 9000 shuffledns -l work/perms_all.txt -r work/resolvers.txt \
+                         -bin /usr/local/bin/massdns -mode resolve -o work/perms_live_raw.txt -silent || true
               if [ ! -s work/perms_live_raw.txt ]; then
-                dnsx -l work/perms_all.txt -r work/resolvers_trusted.txt -retry 3 -silent -o work/perms_live_raw.txt || true
+                dnsx -l work/perms_all.txt -r work/resolvers.txt -retry 3 -silent -o work/perms_live_raw.txt -rc 204,301,302,307,400,401,403,404,405,410,429,500,502,503,504 || true
               fi
               clean < work/perms_live_raw.txt > work/perms_live.txt
               PERMS=$(wc -l < work/perms_live.txt)
@@ -275,7 +283,9 @@ jobs:
           [ -x "$GOBIN_DIR/katana" ]      || go install -v github.com/projectdiscovery/katana/cmd/katana@latest
           [ -x "$GOBIN_DIR/waybackurls" ] || go install -v github.com/tomnomnom/waybackurls@latest
           [ -x "$GOBIN_DIR/hakrawler" ]   || go install -v github.com/hakluke/hakrawler@latest
-          command -v uro >/dev/null || pip3 install --quiet uro
+          # Fix para Ubuntu 24.04 (PEP 668)
+          pip3 install --break-system-packages uro || pip3 install --user uro
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Download subs-live
         uses: actions/download-artifact@v4
         with:
@@ -428,16 +438,17 @@ jobs:
             echo "Sem alteracoes."
           else
             git commit -m "recon: $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            git push || echo "Falha no push, tentando com token..."
           fi
       - name: Notificacao Telegram
         if: always()
         env:
-          TELEGRAM_TOKEN: "8830303342:AAGvbkgzp0cJrBWjAfCrz11AHL7Cj1DsRrQ"
+          # ⚠️ CORRIGIDO: Token movido para Secrets. Crie o secret TELEGRAM_TOKEN no repositório.
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "TELEGRAM_CHAT_ID nao configurado - pulando."
+          if [ -z "$TELEGRAM_CHAT_ID" ] || [ -z "$TELEGRAM_TOKEN" ]; then
+            echo "TELEGRAM_CHAT_ID ou TELEGRAM_TOKEN nao configurado - pulando."
             exit 0
           fi
           NOVOS_SUBS=$(wc -l < resultados/NOVOS_subdomains.txt 2>/dev/null || echo 0)
