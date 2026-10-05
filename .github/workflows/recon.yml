@@ -91,6 +91,9 @@ jobs:
             "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt"
           [ -s wordlists/resolvers.txt ] || curl -sL --retry 3 -o wordlists/resolvers.txt \
             "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
+          if [ ! -s wordlists/resolvers.txt ]; then
+            printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > wordlists/resolvers.txt
+          fi
       - name: Discovery
         run: |
           clean() {
@@ -126,8 +129,9 @@ jobs:
             while read -r t; do
               [ -z "$t" ] && continue
               echo "-> shuffledns: $t"
+              # Removido -mode bruteforce e -bin (shuffledns detecta massdns no PATH automaticamente)
               timeout 5400 shuffledns -d "$t" -w wordlists/subdomains.txt -r wordlists/resolvers.txt \
-                         -mode bruteforce -bin /usr/local/bin/massdns -o "work/brute_${t}_raw.txt" || true
+                         -o "work/brute_${t}_raw.txt" || true
               [ -f "work/brute_${t}_raw.txt" ] && clean < "work/brute_${t}_raw.txt" >> work/brute_all.txt || true
             done < targets.txt
           fi
@@ -160,76 +164,57 @@ jobs:
             /home/runner/go/bin
             /home/runner/.cache/go-build
           key: gobin-v1-${{ runner.os }}
-      - name: Deps + massdns
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev build-essential
-          if ! command -v massdns >/dev/null; then
-            curl -Lfs "https://github.com/blechschmidt/massdns/archive/refs/heads/master.tar.gz" -o /tmp/massdns.tar.gz
-            tar -xzf /tmp/massdns.tar.gz -C /tmp
-            make -C /tmp/massdns-master -j"$(nproc)" >/dev/null
-            sudo cp /tmp/massdns-master/bin/massdns /usr/local/bin/massdns
-          fi
       - name: Instalar ferramentas
         run: |
           [ -x "$GOBIN_DIR/dnsx" ]       || go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
           [ -x "$GOBIN_DIR/alterx" ]     || go install -v github.com/projectdiscovery/alterx/cmd/alterx@latest
-          [ -x "$GOBIN_DIR/shuffledns" ] || go install -v github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest
       - name: Download subs-raw
         uses: actions/download-artifact@v4
         with:
           name: subs-raw
           path: work/
-      - name: Resolver + permutacoes (wildcard-safe)
+      - name: Resolver + permutacoes
         run: |
           if [ -d work/work ]; then cp -rf work/work/. work/ 2>/dev/null || true; fi
           touch work/subs_raw.txt work/deep.flag work/targets.txt work/passive.txt work/brute_all.txt \
                 work/subs_live_raw.txt work/subs_live.txt work/perms_all.txt work/perms_live_raw.txt work/perms_live.txt
-          curl -sL --retry 3 -o work/resolvers.txt "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" || true
-          if [ ! -s work/resolvers.txt ]; then
-            printf '1.1.1.1\n1.0.0.1\n8.8.8.8\n8.8.4.4\n9.9.9.9\n149.112.112.112\n208.67.222.222\n208.67.220.220\n' > work/resolvers.txt
-          fi
+          
           clean() {
             sed -r 's/\x1b\[[0-9;]*[mK]//g' \
               | sed -E 's/^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\][[:space:]]*//' \
               | tr 'A-Z' 'a-z' | sed '/^[[:space:]]*$/d' \
               | grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' || true
           }
+          
           echo "== SANITY CHECK DNS =="
-          printf 'example.com\ngithub.com\n' | dnsx -r work/resolvers.txt -silent -retry 3 || true
+          printf 'example.com\ngithub.com\n' | dnsx -silent -retry 3 || true
+          
           DEEP=$(grep -o '1' work/deep.flag || echo 0)
           RAW=$(wc -l < work/subs_raw.txt)
           echo "Input recebido: $RAW subdominios"
 
-          echo "== RESOLUCAO (shuffledns resolve = filtra wildcard) =="
-          timeout 5400 shuffledns -l work/subs_raw.txt -r work/resolvers.txt \
-                     -bin /usr/local/bin/massdns -mode resolve -o work/subs_live_raw.txt -silent || true
-          if [ ! -s work/subs_live_raw.txt ]; then
-            echo "::warning::shuffledns resolve vazio - fallback dnsx"
-            dnsx -l work/subs_raw.txt -r work/resolvers.txt -retry 3 -silent -o work/subs_live_raw.txt || true
-          fi
+          echo "== RESOLUCAO (dnsx) =="
+          # Substituido shuffledns por dnsx para evitar falha em massa de resolvers no GitHub Actions
+          timeout 5400 dnsx -l work/subs_raw.txt -retry 3 -silent -o work/subs_live_raw.txt -resp || true
+          
           clean < work/subs_live_raw.txt > work/subs_live.txt
           RES=$(wc -l < work/subs_live.txt)
-          echo "Resolvidos (wildcard-filtered): $RES de $RAW"
+          echo "Resolvidos: $RES de $RAW"
           if [ "$RES" -eq 0 ] && [ "$RAW" -gt 0 ]; then
-            echo "::error::RESOLUCAO ZERO - verifique sanity check e resolvers"
+            echo "::error::RESOLUCAO ZERO - verifique sanity check"
           fi
 
           PERMS=0
           if [ "$DEEP" = "1" ] && [ "$RES" -gt 0 ]; then
             echo "== PERMUTACOES (alterx) =="
-            cat work/subs_live.txt | timeout 900 alterx -silent -o work/perms_all.txt \
-              || timeout 900 alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
+            timeout 900 alterx -l work/subs_live.txt -silent -o work/perms_all.txt || true
             if [ -s work/perms_all.txt ]; then
               GEN=$(wc -l < work/perms_all.txt)
               echo "Permutacoes geradas: $GEN"
-              timeout 9000 shuffledns -l work/perms_all.txt -r work/resolvers.txt \
-                         -bin /usr/local/bin/massdns -mode resolve -o work/perms_live_raw.txt -silent || true
-              if [ ! -s work/perms_live_raw.txt ]; then
-                dnsx -l work/perms_all.txt -r work/resolvers.txt -retry 3 -silent -o work/perms_live_raw.txt || true
-              fi
+              timeout 9000 dnsx -l work/perms_all.txt -retry 3 -silent -o work/perms_live_raw.txt -resp || true
               clean < work/perms_live_raw.txt > work/perms_live.txt
               PERMS=$(wc -l < work/perms_live.txt)
-              echo "Permutacoes vivas (wildcard-filtered): $PERMS"
+              echo "Permutacoes vivas: $PERMS"
             else
               echo "AVISO: alterx nao gerou permutacoes"
             fi
@@ -439,7 +424,6 @@ jobs:
       - name: Notificacao Telegram
         if: always()
         env:
-          # Fallback: se o secret TELEGRAM_TOKEN nao existir, usa o token inline (repo privado)
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || '8830303342:AAGvbkgzp0cJrBWjAfCrz11AHL7Cj1DsRrQ' }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
