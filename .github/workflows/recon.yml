@@ -445,13 +445,13 @@ jobs:
           mkdir -p resultados/js
           touch resultados/ep.txt resultados/alterx.txt resultados/passive.txt resultados/brute.txt \
                 resultados/targets.txt resultados/open-ports.txt resultados/live.txt \
-                resultados/live_urls.txt resultados/wayback.txt resultados/js1.txt \
+                resultados/live_urls.txt resultados/wayback.txt resultados/js.txt \
                 resultados/katana.txt resultados/hakrawler.txt resultados/js_secret_hits.txt \
                 resultados/NOVOS_subdomains.txt resultados/NOVOS_endpoints.txt
-          grep -iE '\.js(\?|$|#|&)' resultados/ep.txt 2>/dev/null | sort -u > resultados/js1.txt || touch resultados/js1.txt
-          echo "JS files (js1.txt): $(wc -l < resultados/js1.txt)"
-          if [ -s resultados/js1.txt ]; then
-            head -n 500 resultados/js1.txt | httpx -threads 20 -timeout 10 -silent -sr -sd resultados/js || true
+          grep -iE '\.js(\?|$|#|&)' resultados/ep.txt 2>/dev/null | sort -u > resultados/js.txt || touch resultados/js.txt
+          echo "JS files (js.txt): $(wc -l < resultados/js.txt)"
+          if [ -s resultados/js.txt ]; then
+            head -n 500 resultados/js.txt | httpx -threads 20 -timeout 10 -silent -sr -sd resultados/js || true
             grep -rEioh "(api[_-]?key|secret|token|aws_access_key_id|private_key|bearer)[\"':= ]+[A-Za-z0-9_\-/+]{8,}" \
               resultados/js 2>/dev/null | sort -u | head -n 200 > resultados/js_secret_hits.txt || true
           fi
@@ -469,7 +469,7 @@ jobs:
             echo "- Hosts vivos: $(wc -l < resultados/live_urls.txt)"
             echo "- Endpoints (ep.txt): $(wc -l < resultados/ep.txt)"
             echo "- Wayback URLs: $(wc -l < resultados/wayback.txt)"
-            echo "- JS (js1.txt): $(wc -l < resultados/js1.txt)"
+            echo "- JS (js.txt): $(wc -l < resultados/js.txt)"
           } >> "$GITHUB_STEP_SUMMARY"
           git config user.email "actions@github.com"
           git config user.name "Recon Bot"
@@ -496,14 +496,14 @@ jobs:
             exit 0
           fi
           touch resultados/NOVOS_subdomains.txt resultados/NOVOS_endpoints.txt resultados/alterx.txt \
-                resultados/live_urls.txt resultados/ep.txt resultados/wayback.txt resultados/js1.txt
+                resultados/live_urls.txt resultados/ep.txt resultados/wayback.txt resultados/js.txt
           NOVOS_SUBS=$(wc -l < resultados/NOVOS_subdomains.txt 2>/dev/null || echo 0)
           NOVOS_ENDS=$(wc -l < resultados/NOVOS_endpoints.txt 2>/dev/null || echo 0)
           TOTAL_SUBS=$(wc -l < resultados/alterx.txt 2>/dev/null || echo 0)
           HOSTS_VIVOS=$(wc -l < resultados/live_urls.txt 2>/dev/null || echo 0)
           TOTAL_ENDS=$(wc -l < resultados/ep.txt 2>/dev/null || echo 0)
           WAYBACK=$(wc -l < resultados/wayback.txt 2>/dev/null || echo 0)
-          JS_FILES=$(wc -l < resultados/js1.txt 2>/dev/null || echo 0)
+          JS_FILES=$(wc -l < resultados/js.txt 2>/dev/null || echo 0)
           MSG="🚀 *Recon Finalizado*%0A"
           MSG+="📅 $(date -u '+%Y-%m-%d %H:%M UTC')%0A%0A"
           MSG+="📦 *Subdomínios (alterx.txt)*: ${TOTAL_SUBS}%0A"
@@ -512,7 +512,7 @@ jobs:
           MSG+="🌐 *Hosts Vivos*: ${HOSTS_VIVOS}%0A"
           MSG+="📂 *Endpoints (ep.txt)*: ${TOTAL_ENDS}%0A"
           MSG+="🗄 *Wayback URLs*: ${WAYBACK}%0A"
-          MSG+="📜 *JS (js1.txt)*: ${JS_FILES}%0A"
+          MSG+="📜 *JS (js.txt)*: ${JS_FILES}%0A"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
