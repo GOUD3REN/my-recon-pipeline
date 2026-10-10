@@ -1,5 +1,4 @@
 apitest.octupus.com
-apitest.private.octupus.com
 console.octupus.com
 entropy.octupus.com
 fedele.octupus.com
