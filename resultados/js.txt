@@ -2,9 +2,9 @@ http://octupus.com/__media__/js/templates.js
 http://octupus.com/__media__/pics/411/Delicious_italic_700.font.js
 http://octupus.com/__media__/pics/411/cufon-yui.js
 http://www.octupus.com/octupus.com.js
-https://abs.twimg.com/responsive-web/client-web/i18n/en.451dca61b5af03daa.js
-https://abs.twimg.com/responsive-web/client-web/main.90238f4de6c97812a.js
-https://abs.twimg.com/responsive-web/client-web/vendor.91087bcde2b17561a.js
+https://abs.twimg.com/responsive-web/client-web/i18n/en.3ac5ea2cdac5c885a.js
+https://abs.twimg.com/responsive-web/client-web/main.759a3196d8872caea.js
+https://abs.twimg.com/responsive-web/client-web/vendor.2e0870245baf9760a.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/js/bootstrap.bundle.min.js
@@ -47,7 +47,6 @@ https://octupus.com/assets/js/aos.js
 https://octupus.com/assets/js/bootstrap.min.js
 https://octupus.com/assets/js/preloader.js
 https://octupus.com/assets/js/validate.js
-https://osm.octupus.com/assets/index-DIWvgq3B.js
 https://static.licdn.com/aero-v1/sc/h/assets/A2-4UjN7.js
 https://static.licdn.com/aero-v1/sc/h/assets/B5BL-RZl.js
 https://static.licdn.com/aero-v1/sc/h/assets/BBxvpxJq.js
