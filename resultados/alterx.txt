@@ -1,3 +1,4 @@
+apitest.mssql.octupus.com
 apitest.octupus.com
 console.octupus.com
 entropy.octupus.com
