@@ -107,10 +107,23 @@ jobs:
           touch work/passive_raw.txt work/passive.txt work/brute_all.txt work/subs_raw.txt work/targets.txt
           if [ -n "$TARGET_MANUAL" ]; then echo "$TARGET_MANUAL" > targets.txt; fi
           [ -f targets.txt ] || touch targets.txt
-          sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-z]*://||; s/\*\.//g' targets.txt
+          # NORMALIZA: CRLF, espacos, scheme, path, porta e wildcards (*.dom -> dom, dom.* -> inválido)
+          sed -i 's/\r$//; s/^[[:space:]]*//; s/[[:space:]]*$//; s|^[a-zA-Z]*://||; s|/.*$||; s|:[0-9]*$||; s/\*\.//g; s/\*$//' targets.txt
+          tr 'A-Z' 'a-z' < targets.txt > work/t.tmp || true
+          mv work/t.tmp targets.txt
           grep -vE '^(#|$)' targets.txt > work/t.tmp || true
           mv work/t.tmp targets.txt
-          echo "== ALVOS ($(wc -l < targets.txt)) =="; cat targets.txt
+          # SO DOMINIOS VALIDOS + DEDUPE (wildcard repetido nao roda brute/passivo 2x)
+          grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' targets.txt > work/t.tmp || true
+          ANTES=$(wc -l < work/t.tmp)
+          awk '!seen[$0]++' work/t.tmp > targets.txt
+          UNICOS=$(wc -l < targets.txt)
+          echo "Alvos validos: $UNICOS | linhas descartadas/duplicadas: $((ANTES-UNICOS))"
+          if [ "$UNICOS" -eq 0 ]; then
+            echo "::error::NENHUM ALVO VALIDO em targets.txt ('*.dom' vira 'dom'; linhas como '*', 'dom.*', com path/porta sao descartadas)"
+            exit 1
+          fi
+          echo "== ALVOS ($UNICOS) =="; cat targets.txt
           DEEP=0
           if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
           echo "DEEP=$DEEP" | tee work/deep.flag
@@ -341,8 +354,8 @@ jobs:
           awk '{print $1}' out/live.txt | sort -u > out/live_urls.txt
           echo "Hosts vivos: $(wc -l < out/live_urls.txt)"
 
-          echo "== WAYBACK (curl CDX matchType=domain por raiz, sleep 2 entre raizes) =="
-          grep -vE '^(#|$)' out/targets.txt > work/wayback_roots || true
+          echo "== WAYBACK (curl CDX matchType=domain por raiz UNICA, sleep 2) =="
+          grep -vE '^(#|$)' out/targets.txt | sort -u > work/wayback_roots || true
           : > out/wayback.txt
           while read -r root; do
             [ -z "$root" ] && continue
@@ -419,6 +432,7 @@ jobs:
     timeout-minutes: 60
     env:
       GOBIN_DIR: /home/runner/go/bin
+      MODO_COMPLETO: ${{ github.event.inputs.modo_completo }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -461,8 +475,12 @@ jobs:
           done
           comm -13 <(sort -u /tmp/prev/alterx.txt) <(sort -u resultados/alterx.txt) > resultados/NOVOS_subdomains.txt
           comm -13 <(sort -u /tmp/prev/ep.txt) <(sort -u resultados/ep.txt) > resultados/NOVOS_endpoints.txt
+          DEEP=0
+          if [ "$MODO_COMPLETO" = "true" ] || [ "$(date -u +%u)" = "1" ]; then DEEP=1; fi
+          if [ "$DEEP" = "1" ]; then MODO="DEEP"; else MODO="LEVE"; fi
           {
-            echo "## Recon $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "## Recon $(date -u '+%Y-%m-%d %H:%M UTC') — modo ${MODO} (${GITHUB_EVENT_NAME})"
+            echo "- Alvos: $(paste -sd, resultados/targets.txt 2>/dev/null | cut -c1-200)"
             echo "- Subdominios vivos (alterx.txt): $(wc -l < resultados/alterx.txt)"
             echo "- **NOVOS subdominios**: $(wc -l < resultados/NOVOS_subdomains.txt)"
             echo "- **NOVOS endpoints**: $(wc -l < resultados/NOVOS_endpoints.txt)"
@@ -496,16 +514,38 @@ jobs:
             exit 0
           fi
           touch resultados/NOVOS_subdomains.txt resultados/NOVOS_endpoints.txt resultados/alterx.txt \
-                resultados/live_urls.txt resultados/ep.txt resultados/wayback.txt resultados/js.txt
-          NOVOS_SUBS=$(wc -l < resultados/NOVOS_subdomains.txt 2>/dev/null || echo 0)
-          NOVOS_ENDS=$(wc -l < resultados/NOVOS_endpoints.txt 2>/dev/null || echo 0)
-          TOTAL_SUBS=$(wc -l < resultados/alterx.txt 2>/dev/null || echo 0)
-          HOSTS_VIVOS=$(wc -l < resultados/live_urls.txt 2>/dev/null || echo 0)
-          TOTAL_ENDS=$(wc -l < resultados/ep.txt 2>/dev/null || echo 0)
-          WAYBACK=$(wc -l < resultados/wayback.txt 2>/dev/null || echo 0)
-          JS_FILES=$(wc -l < resultados/js.txt 2>/dev/null || echo 0)
+                resultados/live_urls.txt resultados/ep.txt resultados/wayback.txt resultados/js.txt resultados/targets.txt
+          NOVOS_SUBS=$(wc -l < resultados/NOVOS_subdomains.txt 2>/dev/null || true); NOVOS_SUBS=${NOVOS_SUBS:-0}
+          NOVOS_ENDS=$(wc -l < resultados/NOVOS_endpoints.txt 2>/dev/null || true); NOVOS_ENDS=${NOVOS_ENDS:-0}
+          TOTAL_SUBS=$(wc -l < resultados/alterx.txt 2>/dev/null || true);       TOTAL_SUBS=${TOTAL_SUBS:-0}
+          HOSTS_VIVOS=$(wc -l < resultados/live_urls.txt 2>/dev/null || true);   HOSTS_VIVOS=${HOSTS_VIVOS:-0}
+          TOTAL_ENDS=$(wc -l < resultados/ep.txt 2>/dev/null || true);           TOTAL_ENDS=${TOTAL_ENDS:-0}
+          WAYBACK=$(wc -l < resultados/wayback.txt 2>/dev/null || true);         WAYBACK=${WAYBACK:-0}
+          JS_FILES=$(wc -l < resultados/js.txt 2>/dev/null || true);            JS_FILES=${JS_FILES:-0}
+          NTARGETS=$(wc -l < resultados/targets.txt 2>/dev/null || true);        NTARGETS=${NTARGETS:-0}
+          TARGETS_LIST=$(paste -sd, resultados/targets.txt 2>/dev/null | cut -c1-300 || true); TARGETS_LIST=${TARGETS_LIST:-'-'}
+          DEEP=0
+          if [ "$MODO_COMPLETO" = "true" ]; then DEEP=1; MODO="DEEP (input manual)";
+          elif [ "$(date -u +%u)" = "1" ]; then DEEP=1; MODO="DEEP (segunda-feira)";
+          else MODO="LEVE (cron)"; fi
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then TRIG="cron diario"; else TRIG="dispatch manual"; fi
+          # breakdown por alvo: subs | hosts | endpoints (max 15 linhas p/ nao estourar 4096 chars)
+          POR_ALVO=""
+          i=0
+          while read -r t; do
+            [ -z "$t" ] && continue
+            i=$((i+1))
+            if [ "$i" -gt 15 ]; then POR_ALVO+="• … e mais $((NTARGETS-15)) alvo(s)%0A"; break; fi
+            esc=$(printf '%s' "$t" | sed 's/\./\\./g')
+            S=$(grep -cE "(^|\.)${esc}$" resultados/alterx.txt 2>/dev/null || true); S=${S:-0}
+            H=$(grep -cE "^[a-z]+://([^/]*\.)?${esc}($|[:/])" resultados/live_urls.txt 2>/dev/null || true); H=${H:-0}
+            E=$(grep -cE "^[a-z]+://([^/]*\.)?${esc}($|[:/])" resultados/ep.txt 2>/dev/null || true); E=${E:-0}
+            POR_ALVO+="• ${t}: ${S} subs | ${H} hosts | ${E} eps%0A"
+          done < resultados/targets.txt
           MSG="🚀 *Recon Finalizado*%0A"
-          MSG+="📅 $(date -u '+%Y-%m-%d %H:%M UTC')%0A%0A"
+          MSG+="📅 $(date -u '+%Y-%m-%d %H:%M UTC') | run #${GITHUB_RUN_NUMBER}%0A"
+          MSG+="🎯 *Alvos (${NTARGETS})*: ${TARGETS_LIST}%0A"
+          MSG+="⚙️ *Modo*: ${MODO} | gatilho: ${TRIG}%0A%0A"
           MSG+="📦 *Subdomínios (alterx.txt)*: ${TOTAL_SUBS}%0A"
           MSG+="🔥 *NOVOS Subdomínios*: ${NOVOS_SUBS}%0A"
           MSG+="🔗 *NOVOS Endpoints*: ${NOVOS_ENDS}%0A%0A"
@@ -513,6 +553,7 @@ jobs:
           MSG+="📂 *Endpoints (ep.txt)*: ${TOTAL_ENDS}%0A"
           MSG+="🗄 *Wayback URLs*: ${WAYBACK}%0A"
           MSG+="📜 *JS (js.txt)*: ${JS_FILES}%0A"
+          if [ -n "$POR_ALVO" ]; then MSG+="%0A🎯 *Por alvo*:%0A${POR_ALVO}"; fi
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d parse_mode="Markdown" \
