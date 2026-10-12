@@ -62,7 +62,9 @@ https://static.licdn.com/aero-v1/sc/h/assets/LgUWk5qY.js
 https://static.licdn.com/aero-v1/sc/h/assets/dnx0B-18.js
 https://static.licdn.com/aero-v1/sc/h/assets/oO-sjsKw.js
 https://static.whatsapp.net/rsrc.php/v4/yi/r/QM_Y_oR1E07.js
+https://static.whatsapp.net/rsrc.php/v4/yx/r/0nIG6TqlfLZ.js
 https://static.xx.fbcdn.net/rsrc.php/v4/yi/r/QM_Y_oR1E07.js
+https://static.xx.fbcdn.net/rsrc.php/v4/yx/r/0nIG6TqlfLZ.js
 https://telegram.org/js/tgwallpaper.min.js?3
 https://www.google.com/recaptcha/api.js?render=6Lc6T8ErAAAAAKOayrVepk605RFXfrOuco7rUXGs
 https://www.octupus.com/assets/js/aos.js

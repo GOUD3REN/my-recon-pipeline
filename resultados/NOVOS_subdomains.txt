@@ -1,1 +1,2 @@
-apitest.mssql.octupus.com
+netlify-fedele.octupus.com
+nexlogynetlify.octupus.com

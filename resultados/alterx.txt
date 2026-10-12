@@ -4,8 +4,10 @@ console.octupus.com
 entropy.octupus.com
 fedele.octupus.com
 jenkins.octupus.com
+netlify-fedele.octupus.com
 netsim.octupus.com
 nexlogy.octupus.com
+nexlogynetlify.octupus.com
 niko-dev.octupus.com
 niko.octupus.com
 octupus.com
