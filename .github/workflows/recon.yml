@@ -416,6 +416,13 @@ jobs:
             touch out/ep.txt
           fi
           echo "Endpoints (ep.txt): $(wc -l < out/ep.txt)"
+                - name: Nuclei custom (templates do cofre)
+        if: ${{ hashFiles('templates-nuclei/*.yaml') != '' }}
+        run: |
+          [ -x "$GOBIN_DIR/nuclei" ] || go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+          timeout 3600 "$GOBIN_DIR/nuclei" -l out/live_urls.txt -t templates-nuclei/ \
+            -rate-limit 5 -jsonl -o out/nuclei-custom.jsonl || true
+          echo "Nuclei custom hits: $(wc -l < out/nuclei-custom.jsonl 2>/dev/null || echo 0)"
       - name: Upload surface
         if: always()
         uses: actions/upload-artifact@v4
