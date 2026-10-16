@@ -1,0 +1,15 @@
+id: example-idor-header-leak
+info:
+  name: Example user-id reflection in header
+  author: goud3ren
+  severity: medium
+  description: Template de exemplo - substitua pelos gerados via /gen-nuclei
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: regex
+        part: header
+        regex:
+          - "(?i)x-user-id: [0-9]+"
