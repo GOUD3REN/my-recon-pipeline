@@ -2,9 +2,9 @@ http://octupus.com/__media__/js/templates.js
 http://octupus.com/__media__/pics/411/Delicious_italic_700.font.js
 http://octupus.com/__media__/pics/411/cufon-yui.js
 http://www.octupus.com/octupus.com.js
-https://abs.twimg.com/responsive-web/client-web/i18n/en.3298477499eb42c1a.js
-https://abs.twimg.com/responsive-web/client-web/main.b09082b07a640734a.js
-https://abs.twimg.com/responsive-web/client-web/vendor.5b569a17a9047c64a.js
+https://abs.twimg.com/responsive-web/client-web/i18n/en.d884011cfcd60cd7a.js
+https://abs.twimg.com/responsive-web/client-web/main.50f2837e51ebc2a7a.js
+https://abs.twimg.com/responsive-web/client-web/vendor.e6e462f105d23a59a.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js
 https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/js/bootstrap.bundle.min.js
@@ -61,8 +61,8 @@ https://static.licdn.com/aero-v1/sc/h/assets/DCG7X6vj.js
 https://static.licdn.com/aero-v1/sc/h/assets/DOa2mq5R.js
 https://static.licdn.com/aero-v1/sc/h/assets/QqX-KPGU.js
 https://static.licdn.com/aero-v1/sc/h/assets/jwOx4gfH.js
-https://static.whatsapp.net/rsrc.php/v4/ys/r/ZOkvLF_isNm.js
-https://static.xx.fbcdn.net/rsrc.php/v4/ys/r/ZOkvLF_isNm.js
+https://static.whatsapp.net/rsrc.php/v4/yr/r/eOf4H1tX-xl.js
+https://static.xx.fbcdn.net/rsrc.php/v4/yr/r/eOf4H1tX-xl.js
 https://telegram.org/js/tgwallpaper.min.js?3
 https://www.google.com/recaptcha/api.js?render=6Lc6T8ErAAAAAKOayrVepk605RFXfrOuco7rUXGs
 https://www.octupus.com/assets/js/aos.js
