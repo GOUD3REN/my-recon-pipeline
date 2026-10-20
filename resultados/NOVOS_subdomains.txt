@@ -1,2 +1,0 @@
-apitest.prometheus.octupus.com
-niko-data.octupus.com

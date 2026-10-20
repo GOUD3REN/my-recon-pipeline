@@ -1,12 +1,10 @@
 apitest.octupus.com
-apitest.prometheus.octupus.com
 console.octupus.com
 entropy.octupus.com
 fedele.octupus.com
 jenkins.octupus.com
 netsim.octupus.com
 nexlogy.octupus.com
-niko-data.octupus.com
 niko-dev.octupus.com
 niko.octupus.com
 octupus.com
