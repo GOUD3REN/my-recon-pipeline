@@ -10,4 +10,5 @@ niko.octupus.com
 octupus.com
 osm-demo.octupus.com
 osm.octupus.com
+test.octupus.com
 www.octupus.com
